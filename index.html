@@ -986,6 +986,19 @@
                 const data = await res.json();
                 if (!data || data.error) return;
 
+                if (data.stale) {
+                    ['ph', 'temp', 'do'].forEach(s => {
+                        document.getElementById(`val-${s}-${tankId}`).innerText = '--';
+                        const card = document.getElementById(`card-${s}-${tankId}`);
+                        if (card) {
+                            card.classList.remove('plant-gradient', 'fish-gradient', 'water-gradient', 'amber-gradient', 'bg-danger');
+                            card.classList.add('sensor-fault');
+                        }
+                    });
+                    document.getElementById(`update-time-${tankId}`).innerText = 'ออฟไลน์';
+                    return;
+                }
+
                 const ph    = parseFloat(data.pH            ?? 0).toFixed(1);
                 const temp  = parseFloat(data.Temperature_C ?? 0).toFixed(1);
                 const doVal = parseFloat(data.DO_mgl        ?? 0).toFixed(1);

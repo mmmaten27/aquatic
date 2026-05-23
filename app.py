@@ -1,6 +1,7 @@
 from flask import Flask, Response, jsonify, send_file, request, session, redirect
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
 import atexit
 import cv2
 import os
@@ -94,41 +95,45 @@ def surv_capture_loop(cam_id, phys_idx):
     global surv_frames, surv_frame_counts, surv_online, surv_caps, running
     frame_interval = 1.0 / 15
     while running:
-        t0 = time.time()
-        cap_obj = surv_caps.get(cam_id)
-        if not cap_obj:
-            time.sleep(0.5)
-            continue
-        success, img = cap_obj.read()
-        if not success:
-            surv_online[cam_id] = False
+        try:
+            t0 = time.time()
+            cap_obj = surv_caps.get(cam_id)
+            if not cap_obj:
+                time.sleep(0.5)
+                continue
+            success, img = cap_obj.read()
+            if not success:
+                surv_online[cam_id] = False
+                time.sleep(1)
+                old_cap = surv_caps.get(cam_id)
+                if old_cap:
+                    try:
+                        old_cap.release()
+                    except Exception:
+                        pass
+                new_cap = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
+                if new_cap.isOpened():
+                    new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    surv_caps[cam_id] = new_cap
+                    surv_online[cam_id] = True
+                    print(f"🔄 攝影機 {cam_id} (index {phys_idx}): 重新連接成功")
+                else:
+                    new_cap.release()
+                continue
+            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 65])
+            if ret:
+                with surv_locks[cam_id]:
+                    surv_frames[cam_id] = buf.tobytes()
+                    surv_frame_counts[cam_id] += 1
+            elapsed = time.time() - t0
+            sleep_t = frame_interval - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+        except Exception as e:
+            print(f"❌ SURV CAM {cam_id} CAPTURE LOOP CRASHED: {e}")
             time.sleep(1)
-            old_cap = surv_caps.get(cam_id)
-            if old_cap:
-                try:
-                    old_cap.release()
-                except Exception:
-                    pass
-            new_cap = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
-            if new_cap.isOpened():
-                new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                surv_caps[cam_id] = new_cap
-                surv_online[cam_id] = True
-                print(f"🔄 攝影機 {cam_id} (index {phys_idx}): 重新連接成功")
-            else:
-                new_cap.release()
-            continue
-        ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 65])
-        if ret:
-            with surv_locks[cam_id]:
-                surv_frames[cam_id] = buf.tobytes()
-                surv_frame_counts[cam_id] += 1
-        elapsed = time.time() - t0
-        sleep_t = frame_interval - elapsed
-        if sleep_t > 0:
-            time.sleep(sleep_t)
 
 def yolo_capture_loop():
     """Background thread: capture from YOLO_CAM_IDX, run YOLO, store in yolo_frame."""
@@ -142,93 +147,97 @@ def yolo_capture_loop():
     last_boxes     = []
 
     while running:
-        t0 = time.time()
+        try:
+            t0 = time.time()
 
-        if yolo_cap is None:
-            time.sleep(0.5)
-            continue
+            if yolo_cap is None:
+                time.sleep(0.5)
+                continue
 
-        success, img = yolo_cap.read()
-        if not success:
-            yolo_online = False
-            time.sleep(1)
-            try:
-                yolo_cap.release()
-            except Exception:
-                pass
-            new_cap = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
-            if new_cap.isOpened():
-                new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-                new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                new_cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
-                yolo_cap    = new_cap
-                yolo_online = True
-                print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 重新連接成功")
-            else:
-                new_cap.release()
-            continue
-
-        local_count += 1
-
-        if model is not None and local_count % detect_every == 0:
-            try:
-                results    = model(img, classes=[0], verbose=False)
-                last_boxes = [b for b in results[0].boxes
-                              if float(b.conf[0]) >= MIN_CONFIDENCE]
-            except Exception as e:
-                print(f"❌ AI DETECTION: {e}")
-                last_boxes = []
-
-            with lock:
-                current_person_count = len(last_boxes)
-
-            if last_boxes:
-                now = time.time()
-                if now - last_telegram_sent >= COOLDOWN_SECONDS:
-                    count = len(last_boxes)
-                    daily_detection_total += count
-                    last_detection_timestamp = time.strftime("%Y/%m/%d %H:%M:%S")
-
-                    ts             = time.strftime("%Y%m%d_%H%M%S")
-                    image_filename = f"detection_{ts}.jpg"
-                    image_path     = os.path.join("detection", "captures", image_filename)
-                    cv2.imwrite(image_path, img)
-
-                    try:
-                        conn = get_db_connection()
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "INSERT INTO detection_logs (person_count, image_filename) VALUES (%s, %s)",
-                                (count, image_filename)
-                            )
-                            conn.commit()
-                        conn.close()
-                    except Exception as e:
-                        print(f"❌ DB: 記錄偵測失敗 - {e}")
-
-                    msg = (f"🚨 偵測到人員！\n👥 偵測到: {count} 人\n"
-                           f"🕐 {time.strftime('%Y/%m/%d %H:%M:%S')}\n📍 魚菜共生監控系統")
-                    send_telegram_notification(msg, image_path)
-                    last_telegram_sent = now
+            success, img = yolo_cap.read()
+            if not success:
+                yolo_online = False
+                time.sleep(1)
+                try:
+                    yolo_cap.release()
+                except Exception:
+                    pass
+                new_cap = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
+                if new_cap.isOpened():
+                    new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+                    new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    new_cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                    yolo_cap    = new_cap
+                    yolo_online = True
+                    print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 重新連接成功")
                 else:
-                    print(f"✅ AI DETECTION: 偵測到 {len(last_boxes)} 人 (冷卻中)")
+                    new_cap.release()
+                continue
 
-        for box in last_boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img, f"Person {float(box.conf[0]):.0%}",
-                        (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            local_count += 1
 
-        ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        if ret:
-            with yolo_lock:
-                yolo_frame        = buf.tobytes()
-                yolo_frame_count += 1
+            if model is not None and local_count % detect_every == 0:
+                try:
+                    results    = model(img, classes=[0], verbose=False)
+                    last_boxes = [b for b in results[0].boxes
+                                  if float(b.conf[0]) >= MIN_CONFIDENCE]
+                except Exception as e:
+                    print(f"❌ AI DETECTION: {e}")
+                    last_boxes = []
 
-        elapsed = time.time() - t0
-        sleep_t = frame_interval - elapsed
-        if sleep_t > 0:
-            time.sleep(sleep_t)
+                with lock:
+                    current_person_count = len(last_boxes)
+
+                if last_boxes:
+                    now = time.time()
+                    if now - last_telegram_sent >= COOLDOWN_SECONDS:
+                        count = len(last_boxes)
+                        daily_detection_total += count
+                        last_detection_timestamp = time.strftime("%Y/%m/%d %H:%M:%S")
+
+                        ts             = time.strftime("%Y%m%d_%H%M%S")
+                        image_filename = f"detection_{ts}.jpg"
+                        image_path     = os.path.join("detection", "captures", image_filename)
+                        cv2.imwrite(image_path, img)
+
+                        try:
+                            conn = get_db_connection()
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "INSERT INTO detection_logs (person_count, image_filename) VALUES (%s, %s)",
+                                    (count, image_filename)
+                                )
+                                conn.commit()
+                            conn.close()
+                        except Exception as e:
+                            print(f"❌ DB: 記錄偵測失敗 - {e}")
+
+                        msg = (f"🚨 偵測到人員！\n👥 偵測到: {count} 人\n"
+                               f"🕐 {time.strftime('%Y/%m/%d %H:%M:%S')}\n📍 魚菜共生監控系統")
+                        send_telegram_notification(msg, image_path)
+                        last_telegram_sent = now
+                    else:
+                        print(f"✅ AI DETECTION: 偵測到 {len(last_boxes)} 人 (冷卻中)")
+
+            for box in last_boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(img, f"Person {float(box.conf[0]):.0%}",
+                            (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ret:
+                with yolo_lock:
+                    yolo_frame        = buf.tobytes()
+                    yolo_frame_count += 1
+
+            elapsed = time.time() - t0
+            sleep_t = frame_interval - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+        except Exception as e:
+            print(f"❌ YOLO CAPTURE LOOP CRASHED: {e}")
+            time.sleep(1)
 
 
 def generate_yolo_stream():
@@ -532,8 +541,13 @@ def get_tank_sensor_data(tank_id):
             cursor.execute(f"SELECT * FROM `{table}` ORDER BY timestamp DESC LIMIT 1")
             result = cursor.fetchone()
         connection.close()
+        normalized = normalize_sensor_data(result) or {}
+        if result and result.get('Timestamp'):
+            age = (datetime.now() - result['Timestamp']).total_seconds()
+            if age > 15:
+                normalized['stale'] = True
         print(f"✅ GET DATA: {table} data retrieved successfully")
-        return jsonify(normalize_sensor_data(result) or {})
+        return jsonify(normalized)
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve {table} data - {e}")
         return jsonify({'error': str(e)}), 500
