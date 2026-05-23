@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <title>註冊 - AQUATIC</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(160deg, #cffafe 0%, #e0f2fe 55%, #dcfce7 100%);
+            overflow: hidden;
+        }
+
+        .ocean {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            overflow: hidden;
+        }
+
+        .fish-shadow {
+            position: absolute;
+            fill: rgba(14, 116, 144, 0.13);
+            animation: swim-forward linear infinite;
+        }
+
+        .leaf-float {
+            position: absolute;
+            animation: float-around ease-in-out infinite;
+            transform-origin: center;
+        }
+
+        @keyframes swim-forward {
+            0% {
+                transform: translateX(110vw) translateY(0px);
+            }
+
+            25% {
+                transform: translateX(75vw) translateY(-18px);
+            }
+
+            50% {
+                transform: translateX(45vw) translateY(12px);
+            }
+
+            75% {
+                transform: translateX(15vw) translateY(-10px);
+            }
+
+            100% {
+                transform: translateX(-20vw) translateY(0px);
+            }
+        }
+
+        @keyframes float-around {
+
+            0%,
+            100% {
+                transform: translateY(0px) rotate(0deg);
+            }
+
+            25% {
+                transform: translateY(-22px) rotate(8deg);
+            }
+
+            50% {
+                transform: translateY(-38px) rotate(-4deg);
+            }
+
+            75% {
+                transform: translateY(-18px) rotate(10deg);
+            }
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.88);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.55);
+            border-radius: 2rem;
+            box-shadow: 0 16px 48px rgba(14, 116, 144, 0.12);
+        }
+
+        .input-field {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 0.75rem;
+            font-size: 0.95rem;
+            font-family: 'Noto Sans TC', sans-serif;
+            background: rgba(255, 255, 255, 0.9);
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        .input-field:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 0.85rem;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            font-weight: 700;
+            font-size: 1rem;
+            border: none;
+            border-radius: 0.75rem;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+            font-family: 'Noto Sans TC', sans-serif;
+        }
+
+        .btn-primary:hover {
+            opacity: 0.92;
+        }
+
+        .btn-primary:active {
+            transform: scale(0.98);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .error-box {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #b91c1c;
+            padding: 0.6rem 1rem;
+            border-radius: 0.6rem;
+            font-size: 0.85rem;
+            display: none;
+        }
+
+        .success-box {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            color: #15803d;
+            padding: 0.6rem 1rem;
+            border-radius: 0.6rem;
+            font-size: 0.85rem;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="ocean">
+        <svg class="fish-shadow" style="top:8%;width:170px;animation-duration:48s;animation-delay:0s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:42%;width:230px;animation-duration:62s;animation-delay:-22s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:76%;width:140px;animation-duration:40s;animation-delay:-12s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="leaf-float" style="top:5%;left:8%;width:42px;animation-duration:11s;fill:rgba(16,185,129,0.22);"
+            viewBox="0 0 300 500">
+            <path
+                d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:18%;left:78%;width:56px;animation-duration:14s;animation-delay:-4s;fill:rgba(6,182,212,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:32%;left:15%;width:36px;animation-duration:13s;animation-delay:-7s;fill:rgba(52,211,153,0.20);"
+            viewBox="0 0 300 500">
+            <path
+                d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:52%;left:88%;width:48px;animation-duration:15s;animation-delay:-2s;fill:rgba(20,184,166,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:65%;left:12%;width:50px;animation-duration:12s;animation-delay:-9s;fill:rgba(16,185,129,0.20);"
+            viewBox="0 0 300 500">
+            <path
+                d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:75%;left:60%;width:38px;animation-duration:16s;animation-delay:-5s;fill:rgba(6,182,212,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:88%;left:30%;width:44px;animation-duration:11s;animation-delay:-11s;fill:rgba(52,211,153,0.18);"
+            viewBox="0 0 300 500">
+            <path
+                d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:40%;left:45%;width:40px;animation-duration:14s;animation-delay:-6s;fill:rgba(16,185,129,0.20);"
+            viewBox="0 0 300 500">
+            <path
+                d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+    </div>
+
+    <div class="relative z-10 min-h-screen flex items-center justify-center p-4">
+        <div class="glass-card w-full max-w-md p-8 shadow-2xl">
+
+            <!-- Logo -->
+            <div class="text-center mb-8">
+                <div
+                    class="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white shadow-lg mx-auto mb-4">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M2 12c5-5 15-5 20 0-5 5-15 5-20 0z" />
+                        <path d="M12 2v10M17 7l-5 5" />
+                    </svg>
+                </div>
+                <h1 class="text-3xl font-black text-slate-800">AQUATIC</h1>
+                <p class="text-slate-500 text-sm mt-1">智慧監控系統</p>
+            </div>
+
+            <h2 class="text-xl font-bold text-slate-700 mb-6 text-center">建立帳號</h2>
+
+            <!-- Messages -->
+            <div class="error-box mb-4" id="error-msg"></div>
+            <div class="success-box mb-4" id="success-msg"></div>
+
+            <!-- Form -->
+            <form id="register-form" class="space-y-4" onsubmit="handleRegister(event)">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-600 mb-1.5">帳號</label>
+                    <input type="text" id="username" class="input-field" placeholder="請輸入帳號（至少3個字元）"
+                        autocomplete="username" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-600 mb-1.5">密碼</label>
+                    <input type="password" id="password" class="input-field" placeholder="請輸入密碼（至少6個字元）"
+                        autocomplete="new-password" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-600 mb-1.5">確認密碼</label>
+                    <input type="password" id="confirm-password" class="input-field" placeholder="請再次輸入密碼"
+                        autocomplete="new-password" required>
+                </div>
+                <button type="submit" class="btn-primary mt-2" id="register-btn">立即註冊</button>
+            </form>
+
+            <!-- Login link -->
+            <p class="text-center text-sm text-slate-500 mt-6">
+                已有帳號？
+                <a href="/login" class="text-blue-600 font-semibold hover:underline">立即登入</a>
+            </p>
+
+        </div>
+    </div>
+
+    <script>
+        async function handleRegister(e) {
+            e.preventDefault();
+            const btn = document.getElementById('register-btn');
+            const errorBox = document.getElementById('error-msg');
+            const successBox = document.getElementById('success-msg');
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const confirmPwd = document.getElementById('confirm-password').value;
+
+            errorBox.style.display = 'none';
+            successBox.style.display = 'none';
+
+            if (username.length < 3) {
+                errorBox.innerText = '帳號至少需要 3 個字元';
+                errorBox.style.display = 'block';
+                return;
+            }
+            if (password.length < 6) {
+                errorBox.innerText = '密碼至少需要 6 個字元';
+                errorBox.style.display = 'block';
+                return;
+            }
+            if (password !== confirmPwd) {
+                errorBox.innerText = '兩次輸入的密碼不一致';
+                errorBox.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = '註冊中...';
+
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    successBox.innerText = '註冊成功！即將跳轉至登入頁面...';
+                    successBox.style.display = 'block';
+                    document.getElementById('register-form').reset();
+                    setTimeout(() => { window.location.href = '/login'; }, 1500);
+                } else {
+                    errorBox.innerText = data.error || '註冊失敗，請稍後再試';
+                    errorBox.style.display = 'block';
+                    btn.disabled = false;
+                    btn.innerText = '立即註冊';
+                }
+            } catch (err) {
+                errorBox.innerText = '網路錯誤，請稍後再試';
+                errorBox.style.display = 'block';
+                btn.disabled = false;
+                btn.innerText = '立即註冊';
+            }
+        }
+    </script>
+</body>
+
+</html>

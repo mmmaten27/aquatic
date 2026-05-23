@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <title>魚缸 - AQUATIC</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap');
+
+        body { font-family: 'Noto Sans TC', sans-serif; background: linear-gradient(160deg, #cffafe 0%, #e0f2fe 55%, #dcfce7 100%); overflow-x: hidden; margin: 0; }
+
+        .ocean { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; overflow: hidden; }
+        .fish-shadow { position: absolute; fill: rgba(14,116,144,0.13); animation: swim-forward linear infinite; }
+        .leaf-float  { position: absolute; animation: float-around ease-in-out infinite; transform-origin: center; }
+
+        @keyframes swim-forward {
+            0%   { transform: translateX(110vw) translateY(0px);   }
+            25%  { transform: translateX(75vw)  translateY(-18px); }
+            50%  { transform: translateX(45vw)  translateY(12px);  }
+            75%  { transform: translateX(15vw)  translateY(-10px); }
+            100% { transform: translateX(-20vw) translateY(0px);   }
+        }
+        @keyframes float-around {
+            0%, 100% { transform: translateY(0px)   rotate(0deg);  }
+            25%       { transform: translateY(-22px) rotate(8deg);  }
+            50%       { transform: translateY(-38px) rotate(-4deg); }
+            75%       { transform: translateY(-18px) rotate(10deg); }
+        }
+
+        .glass-card   { background: rgba(255,255,255,0.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.55); border-radius: 1.5rem; box-shadow: 0 8px 32px rgba(14,116,144,0.08); }
+        .glass-header { background: rgba(255,255,255,0.92); backdrop-filter: blur(15px); border-bottom: 1px solid rgba(255,255,255,0.4); }
+
+        .plant-gradient { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; }
+        .water-gradient  { background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%); color: white; }
+        .fish-gradient   { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; }
+        .bg-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important;
+            box-shadow: 0 0 20px rgba(239,68,68,0.7);
+            color: white !important;
+            animation: shake 0.4s infinite !important;
+        }
+        @keyframes shake {
+            0%  { transform: translate(1px,1px)   rotate(0deg);  }
+            20% { transform: translate(-3px,0px)  rotate(1deg);  }
+            40% { transform: translate(1px,-1px)  rotate(1deg);  }
+            60% { transform: translate(-3px,1px)  rotate(0deg);  }
+            80% { transform: translate(-1px,-1px) rotate(1deg);  }
+            100%{ transform: translate(1px,-2px)  rotate(-1deg); }
+        }
+
+        .time-btn { transition: all 0.2s; }
+        .time-btn.active { background: #1e3a5f; color: white; }
+        .time-btn:not(.active) { background: rgba(255,255,255,0.8); color: #475569; }
+        .time-btn:not(.active):hover { background: white; }
+    </style>
+</head>
+
+<body>
+
+    <div class="ocean">
+        <svg class="fish-shadow" style="top:8%;width:175px;animation-duration:46s;animation-delay:0s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
+        <svg class="fish-shadow" style="top:32%;width:245px;animation-duration:62s;animation-delay:-18s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
+        <svg class="fish-shadow" style="top:58%;width:138px;animation-duration:41s;animation-delay:-30s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
+        <svg class="fish-shadow" style="top:78%;width:198px;animation-duration:54s;animation-delay:-8s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
+        <svg class="fish-shadow" style="top:20%;width:155px;animation-duration:50s;animation-delay:-24s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
+        <svg class="leaf-float" style="top:5%;left:8%;width:42px;animation-duration:11s;fill:rgba(16,185,129,0.22);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
+        <svg class="leaf-float" style="top:18%;left:15%;width:56px;animation-duration:14s;animation-delay:-4s;fill:rgba(6,182,212,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
+        <svg class="leaf-float" style="top:30%;left:18%;width:36px;animation-duration:13s;animation-delay:-7s;fill:rgba(52,211,153,0.20);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
+        <svg class="leaf-float" style="top:44%;left:88%;width:48px;animation-duration:15s;animation-delay:-2s;fill:rgba(20,184,166,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
+        <svg class="leaf-float" style="top:60%;left:12%;width:52px;animation-duration:12s;animation-delay:-9s;fill:rgba(16,185,129,0.20);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
+        <svg class="leaf-float" style="top:72%;left:82%;width:38px;animation-duration:16s;animation-delay:-5s;fill:rgba(6,182,212,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
+        <svg class="leaf-float" style="top:82%;left:86%;width:44px;animation-duration:11s;animation-delay:-11s;fill:rgba(52,211,153,0.18);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
+        <svg class="leaf-float" style="top:50%;left:20%;width:34px;animation-duration:12s;animation-delay:-8s;fill:rgba(6,182,212,0.16);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
+    </div>
+
+    <header class="glass-header sticky top-0 z-50 px-6 py-4 shadow-sm">
+        <div class="max-w-6xl mx-auto flex items-center justify-between gap-2">
+            <div class="flex items-center space-x-2 sm:space-x-4">
+                <button onclick="window.location.href='/'"
+                    class="flex items-center gap-1 bg-white/80 hover:bg-white px-3 py-2 rounded-xl shadow-sm border border-slate-200 text-slate-700 font-semibold transition text-sm whitespace-nowrap">
+                    ← 返回
+                </button>
+                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-md flex-shrink-0">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M2 12c5-5 15-5 20 0-5 5-15 5-20 0z"/>
+                        <path d="M12 2v10M17 7l-5 5"/>
+                    </svg>
+                </div>
+                <div class="min-w-0">
+                    <h1 class="text-base sm:text-xl font-bold text-slate-800 leading-tight" id="page-title">魚缸 -</h1>
+                    <div class="text-xs font-medium text-slate-500 hidden sm:block">智慧監控系統</div>
+                </div>
+            </div>
+            <div class="text-right hidden sm:block">
+                <div id="clock-date" class="text-xs text-slate-500 font-medium"></div>
+                <div id="clock-time" class="text-lg font-bold text-slate-800"></div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto p-6 space-y-6 mt-4">
+
+        <!-- 當前數值 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div id="card-ph" class="glass-card rounded-3xl p-6 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-4xl">🧪</div>
+                    <div class="text-right">
+                        <div class="text-4xl font-black" id="val-ph">--</div>
+                        <div class="text-sm font-medium opacity-80">pH</div>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs opacity-70">標準值 6.5 – 7.5</span>
+                    <span id="status-ph" class="text-xs font-bold px-2 py-0.5 rounded-full bg-white/30">--</span>
+                </div>
+            </div>
+
+            <div id="card-temp" class="glass-card rounded-3xl p-6 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-4xl">🌡️</div>
+                    <div class="text-right">
+                        <div class="text-4xl font-black" id="val-temp">--</div>
+                        <div class="text-sm font-medium opacity-80">°C</div>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs opacity-70">標準值 22 – 27 °C</span>
+                    <span id="status-temp" class="text-xs font-bold px-2 py-0.5 rounded-full bg-white/30">--</span>
+                </div>
+            </div>
+
+            <div id="card-do" class="glass-card rounded-3xl p-6 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-4xl">💧</div>
+                    <div class="text-right">
+                        <div class="text-4xl font-black" id="val-do">--</div>
+                        <div class="text-sm font-medium opacity-80">mg/L</div>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs opacity-70">標準值 6.0 – 8.0 mg/L</span>
+                    <span id="status-do" class="text-xs font-bold px-2 py-0.5 rounded-full bg-white/30">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 最後更新 + 時間範圍選擇 -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="text-sm text-slate-500">
+                🕐 最後更新：<span id="last-update" class="font-semibold text-slate-700">--</span>
+            </div>
+            <div class="flex gap-2">
+                <button class="time-btn text-sm font-semibold px-4 py-1.5 rounded-xl shadow-sm border border-slate-200" onclick="setRange(1, this)">1 小時</button>
+                <button class="time-btn text-sm font-semibold px-4 py-1.5 rounded-xl shadow-sm border border-slate-200" onclick="setRange(6, this)">6 小時</button>
+                <button class="time-btn active text-sm font-semibold px-4 py-1.5 rounded-xl shadow-sm border border-slate-200" onclick="setRange(24, this)">24 小時</button>
+                <button class="time-btn text-sm font-semibold px-4 py-1.5 rounded-xl shadow-sm border border-slate-200" onclick="setRange(168, this)">7 天</button>
+            </div>
+        </div>
+
+        <!-- 圖表 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- pH 圖表 -->
+            <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-slate-800 flex items-center gap-2">🧪 pH</h3>
+                    <span class="text-xs text-slate-400 font-medium">標準值 6.5 – 7.5</span>
+                </div>
+                <div class="relative h-52">
+                    <canvas id="chart-ph"></canvas>
+                    <div id="no-data-ph" class="hidden absolute inset-0 flex items-center justify-center text-slate-400 text-sm">尚無數據</div>
+                </div>
+            </div>
+
+            <!-- 溫度圖表 -->
+            <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-slate-800 flex items-center gap-2">🌡️ 溫度</h3>
+                    <span class="text-xs text-slate-400 font-medium">標準值 22 – 27 °C</span>
+                </div>
+                <div class="relative h-52">
+                    <canvas id="chart-temp"></canvas>
+                    <div id="no-data-temp" class="hidden absolute inset-0 flex items-center justify-center text-slate-400 text-sm">尚無數據</div>
+                </div>
+            </div>
+
+            <!-- DO 圖表 -->
+            <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-slate-800 flex items-center gap-2">💧 溶氧量（DO）</h3>
+                    <span class="text-xs text-slate-400 font-medium">標準值 6.0 – 8.0 mg/L</span>
+                </div>
+                <div class="relative h-52">
+                    <canvas id="chart-do"></canvas>
+                    <div id="no-data-do" class="hidden absolute inset-0 flex items-center justify-center text-slate-400 text-sm">尚無數據</div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <script>
+        // --- 從 URL 取得魚缸編號 ---
+        const tankId = parseInt(window.location.pathname.split('/').pop()) || 1;
+        document.title = `魚缸 ${tankId} - AQUATIC`;
+        document.getElementById('page-title').innerText = `🐠 魚缸 ${tankId}`;
+
+        // --- 時鐘 ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock-date').innerText = now.toLocaleDateString('zh-TW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            document.getElementById('clock-time').innerText = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // --- 感測器設定 ---
+        const SENSORS = {
+            ph:   { key: 'pH',            min: 6.5, max: 7.5, cardId: 'card-ph',   normalClass: 'plant-gradient', valId: 'val-ph',   statusId: 'status-ph'   },
+            temp: { key: 'Temperature_C', min: 22,  max: 27,  cardId: 'card-temp', normalClass: 'fish-gradient',  valId: 'val-temp', statusId: 'status-temp' },
+            do:   { key: 'DO_mgl',        min: 6.0, max: 8.0, cardId: 'card-do',   normalClass: 'water-gradient', valId: 'val-do',   statusId: 'status-do'   },
+        };
+
+        function applyCardState(name, value) {
+            const cfg  = SENSORS[name];
+            const card = document.getElementById(cfg.cardId);
+            const stat = document.getElementById(cfg.statusId);
+            const v = parseFloat(value);
+
+            card.classList.remove('plant-gradient', 'fish-gradient', 'water-gradient', 'bg-danger', 'glass-card');
+
+            if (isNaN(v) || v === 0) {
+                card.classList.add('glass-card');
+                stat.innerText = '--';
+                stat.className = 'text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-400';
+            } else if (v < cfg.min || v > cfg.max) {
+                card.classList.add('bg-danger');
+                stat.innerText = '⚠️ 超出標準';
+                stat.className = 'text-xs font-bold px-2 py-0.5 rounded-full bg-white/30 text-white';
+            } else {
+                card.classList.add(cfg.normalClass);
+                stat.innerText = '✓ 正常';
+                stat.className = 'text-xs font-bold px-2 py-0.5 rounded-full bg-white/30';
+            }
+        }
+
+        // --- 圖表實例 ---
+        let charts = {};
+
+        function buildChart(canvasId, label, color, minRef, maxRef, labels, values) {
+            const noDataEl = document.getElementById(`no-data-${canvasId.replace('chart-', '')}`);
+            if (charts[canvasId]) charts[canvasId].destroy();
+
+            if (!labels.length) {
+                noDataEl.classList.remove('hidden');
+                return;
+            }
+            noDataEl.classList.add('hidden');
+
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const grad = ctx.createLinearGradient(0, 0, 0, 200);
+            grad.addColorStop(0, color + '40');
+            grad.addColorStop(1, color + '05');
+
+            charts[canvasId] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label,
+                            data: values,
+                            borderColor: color,
+                            backgroundColor: grad,
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: values.length > 50 ? 0 : 3,
+                            pointHoverRadius: 5,
+                            borderWidth: 2,
+                        },
+                        {
+                            label: '最小值',
+                            data: Array(labels.length).fill(minRef),
+                            borderColor: '#ef4444',
+                            borderDash: [5, 4],
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false,
+                        },
+                        {
+                            label: '最大值',
+                            data: Array(labels.length).fill(maxRef),
+                            borderColor: '#ef4444',
+                            borderDash: [5, 4],
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false,
+                        },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(15,23,42,0.9)',
+                            titleFont: { size: 11 },
+                            bodyFont: { size: 12 },
+                            callbacks: {
+                                label: ctx => ctx.dataset.label === label ? ` ${ctx.parsed.y.toFixed(2)}` : null,
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                maxTicksLimit: 6,
+                                font: { size: 10 },
+                                color: '#94a3b8',
+                                maxRotation: 0,
+                                callback(val, i) {
+                                    const d = new Date(this.getLabelForValue(val));
+                                    return isNaN(d) ? '' : d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+                                }
+                            },
+                            grid: { color: 'rgba(148,163,184,0.15)' },
+                        },
+                        y: {
+                            ticks: { font: { size: 10 }, color: '#94a3b8' },
+                            grid: { color: 'rgba(148,163,184,0.15)' },
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- 取得當前數值 ---
+        async function fetchCurrent() {
+            try {
+                const res = await fetch(`/api/sensor-data/tank/${tankId}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data || data.error) return;
+
+                const ph   = parseFloat(data.pH            ?? 0).toFixed(1);
+                const temp = parseFloat(data.Temperature_C ?? 0).toFixed(1);
+                const doV  = parseFloat(data.DO_mgl        ?? 0).toFixed(1);
+
+                document.getElementById('val-ph').innerText   = ph;
+                document.getElementById('val-temp').innerText = temp;
+                document.getElementById('val-do').innerText   = doV;
+
+                applyCardState('ph',   ph);
+                applyCardState('temp', temp);
+                applyCardState('do',   doV);
+
+                if (data.timestamp) {
+                    const t = new Date(data.timestamp).toLocaleString('zh-TW');
+                    document.getElementById('last-update').innerText = t;
+                }
+            } catch (e) { console.error('Current fetch error:', e); }
+        }
+
+        // --- 取得歷史數據並繪圖 ---
+        async function fetchHistory(hours) {
+            try {
+                const res = await fetch(`/api/sensor-history/tank/${tankId}/${hours}`);
+                if (!res.ok) return;
+                const rows = await res.json();
+
+                const labels   = rows.map(r => r.timestamp);
+                const phVals   = rows.map(r => parseFloat(r.pH)            || null);
+                const tempVals = rows.map(r => parseFloat(r.Temperature_C) || null);
+                const doVals   = rows.map(r => parseFloat(r.DO_mgl)        || null);
+
+                buildChart('chart-ph',   'pH',    '#10b981', 6.5, 7.5, labels, phVals);
+                buildChart('chart-temp', '溫度',  '#3b82f6', 22,  27,  labels, tempVals);
+                buildChart('chart-do',   'DO',    '#0ea5e9', 6.0, 8.0, labels, doVals);
+            } catch (e) { console.error('History fetch error:', e); }
+        }
+
+        // --- 時間範圍選擇 ---
+        let currentRange = 24;
+        function setRange(hours, btn) {
+            currentRange = hours;
+            document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            fetchHistory(hours);
+        }
+
+        // --- 初始化與自動更新 ---
+        fetchCurrent();
+        fetchHistory(currentRange);
+        setInterval(fetchCurrent, 5000);
+        setInterval(() => fetchHistory(currentRange), 30000);
+    </script>
+</body>
+</html>

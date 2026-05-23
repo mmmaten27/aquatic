@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.pt
+temp_detection_*.jpg
+detection_log.txt

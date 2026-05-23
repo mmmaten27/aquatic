@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="favicon.ico?v=2" type="image/x-icon">
+    <title>Aquaponics Smart System - AQUATIC</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background: linear-gradient(160deg, #cffafe 0%, #e0f2fe 55%, #dcfce7 100%);
+            overflow-x: hidden;
+            margin: 0;
+            position: relative;
+        }
+
+        .ocean {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        .fish-shadow {
+            position: absolute;
+            fill: rgba(14, 116, 144, 0.13);
+            animation: swim-forward linear infinite;
+        }
+
+        .leaf-float {
+            position: absolute;
+            animation: float-around ease-in-out infinite;
+            transform-origin: center;
+        }
+
+        @keyframes swim-forward {
+            0% {
+                transform: translateX(110vw) translateY(0px);
+            }
+
+            25% {
+                transform: translateX(75vw) translateY(-18px);
+            }
+
+            50% {
+                transform: translateX(45vw) translateY(12px);
+            }
+
+            75% {
+                transform: translateX(15vw) translateY(-10px);
+            }
+
+            100% {
+                transform: translateX(-20vw) translateY(0px);
+            }
+        }
+
+        @keyframes float-around {
+
+            0%,
+            100% {
+                transform: translateY(0px) rotate(0deg);
+            }
+
+            25% {
+                transform: translateY(-22px) rotate(8deg);
+            }
+
+            50% {
+                transform: translateY(-38px) rotate(-4deg);
+            }
+
+            75% {
+                transform: translateY(-18px) rotate(10deg);
+            }
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.82);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.55);
+            border-radius: 1.5rem;
+            box-shadow: 0 8px 32px rgba(14, 116, 144, 0.08);
+        }
+
+        .glass-header {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(15px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .plant-gradient {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+        }
+
+        .water-gradient {
+            background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+            color: white;
+        }
+
+        .fish-gradient {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+        }
+
+        .bg-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%) !important;
+            animation: shake 0.4s infinite !important;
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.8);
+            color: white !important;
+        }
+
+        @keyframes shake {
+            0% {
+                transform: translate(1px, 1px) rotate(0deg);
+            }
+
+            10% {
+                transform: translate(-2px, -2px) rotate(-1deg);
+            }
+
+            20% {
+                transform: translate(-3px, 0px) rotate(1deg);
+            }
+
+            30% {
+                transform: translate(3px, 2px) rotate(0deg);
+            }
+
+            40% {
+                transform: translate(1px, -1px) rotate(1deg);
+            }
+
+            50% {
+                transform: translate(-1px, 2px) rotate(-1deg);
+            }
+
+            60% {
+                transform: translate(-3px, 1px) rotate(0deg);
+            }
+
+            70% {
+                transform: translate(3px, 1px) rotate(-1deg);
+            }
+
+            80% {
+                transform: translate(-1px, -1px) rotate(1deg);
+            }
+
+            90% {
+                transform: translate(1px, 2px) rotate(0deg);
+            }
+
+            100% {
+                transform: translate(1px, -2px) rotate(-1deg);
+            }
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        input:checked+.slider {
+            background-color: #10b981;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(20px);
+        }
+        /* Vertical Range Slider — mobile compact */
+        .v-slider-wrap { width: 36px; height: 96px; display: flex; align-items: center; justify-content: center; }
+        .v-slider { -webkit-appearance: none; appearance: none; width: 96px; height: 6px; background: #dde5ed; border-radius: 3px; outline: none; cursor: pointer; transform: rotate(-90deg); }
+        .v-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: white; border: 3px solid #3b82f6; cursor: pointer; box-shadow: 0 2px 8px rgba(59,130,246,0.35); transition: box-shadow 0.15s; }
+        .v-slider::-webkit-slider-thumb:hover { box-shadow: 0 2px 14px rgba(59,130,246,0.55); }
+        .v-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: white; border: 3px solid #3b82f6; cursor: pointer; box-shadow: 0 2px 8px rgba(59,130,246,0.35); }
+        .v-slider-temp::-webkit-slider-thumb { border-color: #f97316; box-shadow: 0 2px 8px rgba(249,115,22,0.35); }
+        .v-slider-temp::-webkit-slider-thumb:hover { box-shadow: 0 2px 14px rgba(249,115,22,0.55); }
+        .v-slider-temp::-moz-range-thumb { border-color: #f97316; }
+        .v-slider-do::-webkit-slider-thumb { border-color: #06b6d4; box-shadow: 0 2px 8px rgba(6,182,212,0.35); }
+        .v-slider-do::-webkit-slider-thumb:hover { box-shadow: 0 2px 14px rgba(6,182,212,0.55); }
+        .v-slider-do::-moz-range-thumb { border-color: #06b6d4; }
+        /* Desktop: taller sliders */
+        @media (min-width: 768px) {
+            .v-slider-wrap { height: 120px; }
+            .v-slider { width: 120px; }
+        }
+        /* Sensor fault — gray card when sensor sends 0 for extended period */
+        .sensor-fault {
+            background: linear-gradient(135deg, #94a3b8 0%, #64748b 100%) !important;
+            color: white !important;
+            box-shadow: 0 4px 15px rgba(100,116,139,0.25) !important;
+            animation: none !important;
+        }
+        /* Trend warning — card turns amber/orange (value still OK but trending toward breach) */
+        .amber-gradient {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+            color: white !important;
+            animation: pulse-trend 2s ease-in-out infinite !important;
+            box-shadow: 0 0 22px rgba(245,158,11,0.55) !important;
+        }
+        @keyframes pulse-trend {
+            0%, 100% { box-shadow: 0 0 16px rgba(245,158,11,0.4); }
+            50%       { box-shadow: 0 0 32px rgba(245,158,11,0.75); }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="ocean">
+        <svg class="fish-shadow" style="top:8%;width:175px;animation-duration:46s;animation-delay:0s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:32%;width:245px;animation-duration:62s;animation-delay:-18s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:58%;width:138px;animation-duration:41s;animation-delay:-30s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:78%;width:198px;animation-duration:54s;animation-delay:-8s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:22%;width:158px;animation-duration:50s;animation-delay:-24s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="fish-shadow" style="top:65%;width:118px;animation-duration:38s;animation-delay:-13s;"
+            viewBox="0 0 550 290">
+            <path
+                d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z" />
+        </svg>
+        <svg class="leaf-float" style="top:5%;left:8%;width:42px;animation-duration:11s;fill:rgba(16,185,129,0.22);"
+            viewBox="0 0 300 500">
+            <path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:18%;left:14%;width:56px;animation-duration:14s;animation-delay:-4s;fill:rgba(6,182,212,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:30%;left:18%;width:36px;animation-duration:13s;animation-delay:-7s;fill:rgba(52,211,153,0.20);"
+            viewBox="0 0 300 500">
+            <path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:44%;left:88%;width:48px;animation-duration:15s;animation-delay:-2s;fill:rgba(20,184,166,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:60%;left:12%;width:52px;animation-duration:12s;animation-delay:-9s;fill:rgba(16,185,129,0.20);"
+            viewBox="0 0 300 500">
+            <path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:72%;left:80%;width:38px;animation-duration:16s;animation-delay:-5s;fill:rgba(6,182,212,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:82%;left:84%;width:44px;animation-duration:11s;animation-delay:-11s;fill:rgba(52,211,153,0.18);"
+            viewBox="0 0 300 500">
+            <path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:90%;left:80%;width:50px;animation-duration:13s;animation-delay:-3s;fill:rgba(20,184,166,0.18);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:24%;left:86%;width:40px;animation-duration:14s;animation-delay:-6s;fill:rgba(16,185,129,0.20);"
+            viewBox="0 0 300 500">
+            <path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z" />
+        </svg>
+        <svg class="leaf-float"
+            style="top:50%;left:18%;width:34px;animation-duration:12s;animation-delay:-8s;fill:rgba(6,182,212,0.16);"
+            viewBox="0 0 512 512">
+            <path
+                d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z" />
+        </svg>
+    </div>
+
+    <header class="glass-header sticky top-0 z-50 px-6 py-4 shadow-sm">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-2">
+            <div class="flex items-center space-x-2 sm:space-x-4">
+                <div
+                    class="w-10 h-10 sm:w-12 sm:h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-md">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M2 12c5-5 15-5 20 0-5 5-15 5-20 0z" />
+                        <path d="M12 2v10M17 7l-5 5" />
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg sm:text-2xl font-bold text-slate-800 leading-tight">AQUATIC</h1>
+                    <div class="text-xs font-medium text-slate-500 hidden sm:block">智慧監控系統</div>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-2 sm:space-x-6">
+                <div
+                    class="flex items-center space-x-2 bg-white/80 px-3 py-2 rounded-full shadow-sm border border-slate-100">
+                    <span class="text-sm font-semibold text-slate-700 flex items-center gap-1">
+                        📷 <span id="camera-status-text" class="hidden sm:inline">開啟</span>
+                    </span>
+                    <label class="switch">
+                        <input type="checkbox" checked id="camera-toggle">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
+                <div class="relative cursor-pointer">
+                    <span class="text-2xl">🔔</span>
+                    <span id="alert-badge"
+                        class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] flex items-center justify-center rounded-full font-bold shadow-md hidden">0</span>
+                </div>
+
+                <div class="text-right border-l pl-6 border-slate-300 hidden sm:block">
+                    <div id="clock-date" class="text-xs text-slate-500 font-medium"></div>
+                    <div id="clock-time" class="text-xl font-bold text-slate-800"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-6 space-y-8 mt-4">
+
+        <!-- 攝影機 + 偵測統計 -->
+        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div
+                class="lg:col-span-2 glass-card rounded-3xl p-6 shadow-xl aspect-video relative overflow-hidden bg-slate-900 flex items-center justify-center border border-white/50">
+                <img src="/video_feed" alt="即時影像" class="w-full h-full object-cover rounded-xl" id="live-feed">
+                <div id="camera-off-msg" class="hidden text-white font-medium flex-col items-center">
+                    <span class="text-5xl mb-3">📷</span>
+                    <span class="text-lg">攝影機已關閉</span>
+                </div>
+                <div class="absolute top-6 left-6 bg-black/70 text-white px-4 py-2 rounded-xl text-sm font-semibold backdrop-blur-md shadow-lg"
+                    id="camera-badge">
+                    <span class="w-2 h-2 inline-block bg-red-500 rounded-full animate-pulse mr-2"></span>
+                    即時 - YOLO AI
+                </div>
+            </div>
+
+            <div class="glass-card rounded-3xl p-6 shadow-xl space-y-5 border border-white">
+                <h3 class="font-bold text-xl text-slate-800 flex items-center gap-2">📊 <span>偵測統計</span></h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-blue-50 rounded-2xl p-5 border border-blue-100 text-center shadow-sm">
+                        <div class="text-sm text-slate-500 font-semibold mb-1">當前人數</div>
+                        <div class="text-4xl font-black text-blue-600" id="stat-current">0</div>
+                        <div class="text-xs text-slate-400 mt-1">人</div>
+                    </div>
+                    <div class="bg-green-50 rounded-2xl p-5 border border-green-100 text-center shadow-sm">
+                        <div class="text-sm text-slate-500 font-semibold mb-1">今日人次</div>
+                        <div class="text-4xl font-black text-green-600" id="stat-daily">0</div>
+                        <div class="text-xs text-slate-400 mt-1">次</div>
+                    </div>
+                </div>
+                <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                    <div class="text-xs text-slate-500 mb-1">最後偵測時間</div>
+                    <div class="text-sm font-semibold text-slate-700" id="stat-last">-</div>
+                </div>
+                <button
+                    class="w-full bg-slate-800 hover:bg-slate-900 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2"
+                    onclick="window.location.href='/history'">
+                    <span class="text-lg">📅</span> <span>查看人員進出歷史紀錄</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- 監控攝影機 3 台 -->
+        <section>
+            <h2 class="text-xl font-bold text-slate-700 mb-4 flex items-center gap-2">
+                📡 <span>監控攝影機</span>
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+                <!-- 攝影機 1 -->
+                <div class="glass-card rounded-3xl overflow-hidden shadow-xl border border-white/50">
+                    <div class="flex items-center justify-between px-4 py-2 bg-white/40">
+                        <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
+                            <span id="dot-cam-1" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
+                            攝影機 1
+                        </span>
+                        <button onclick="openSurvModal(1)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
+                    </div>
+                    <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
+                        <img id="surv-feed-1" src="" alt="攝影機 1" class="w-full h-full object-cover hidden">
+                        <div id="surv-offline-1" class="flex flex-col items-center gap-2 text-slate-400">
+                            <span class="text-4xl">📷</span>
+                            <span class="text-xs font-medium">離線</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 攝影機 2 -->
+                <div class="glass-card rounded-3xl overflow-hidden shadow-xl border border-white/50">
+                    <div class="flex items-center justify-between px-4 py-2 bg-white/40">
+                        <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
+                            <span id="dot-cam-2" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
+                            攝影機 2
+                        </span>
+                        <button onclick="openSurvModal(2)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
+                    </div>
+                    <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
+                        <img id="surv-feed-2" src="" alt="攝影機 2" class="w-full h-full object-cover hidden">
+                        <div id="surv-offline-2" class="flex flex-col items-center gap-2 text-slate-400">
+                            <span class="text-4xl">📷</span>
+                            <span class="text-xs font-medium">離線</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 攝影機 3 -->
+                <div class="glass-card rounded-3xl overflow-hidden shadow-xl border border-white/50">
+                    <div class="flex items-center justify-between px-4 py-2 bg-white/40">
+                        <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
+                            <span id="dot-cam-3" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
+                            攝影機 3
+                        </span>
+                        <button onclick="openSurvModal(3)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
+                    </div>
+                    <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
+                        <img id="surv-feed-3" src="" alt="攝影機 3" class="w-full h-full object-cover hidden">
+                        <div id="surv-offline-3" class="flex flex-col items-center gap-2 text-slate-400">
+                            <span class="text-4xl">📷</span>
+                            <span class="text-xs font-medium">離線</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- 各魚缸感測器數據 (3 缸 × 3 感測器 = 9 卡片) -->
+        <section>
+            <h2 class="text-xl font-bold text-slate-700 mb-4 flex items-center gap-2">🌊 <span>各魚缸感測器數據</span></h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+                <!-- 魚缸 1 -->
+                <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50 space-y-3 cursor-pointer hover:shadow-2xl transition-shadow duration-200"
+                    onclick="window.location.href='/tank/1'">
+                    <div class="flex items-center justify-between mb-1">
+                        <h3 class="font-bold text-lg text-slate-800">🐟 魚缸 1</h3>
+                        <div class="flex items-center gap-1">
+                            <span class="text-xs text-slate-400" id="update-time-1">--</span>
+                            <button onclick="openSettings(1,event)" class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/70 text-slate-400 hover:text-slate-600 transition" title="設定標準範圍">⚙️</button>
+                        </div>
+                    </div>
+                    <div id="card-ph-1" class="p-4 rounded-2xl plant-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🧪</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-ph-1">--</div>
+                                <div class="text-xs opacity-90" id="label-ph-1">pH（標準 6.5–7.5）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-temp-1" class="p-4 rounded-2xl fish-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🌡️</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-temp-1">--</div>
+                                <div class="text-xs opacity-90" id="label-temp-1">°C（標準 22–27）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-do-1" class="p-4 rounded-2xl water-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">💧</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-do-1">--</div>
+                                <div class="text-xs opacity-90" id="label-do-1">mg/L（標準 6.0–8.0）</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 魚缸 2 -->
+                <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50 space-y-3 cursor-pointer hover:shadow-2xl transition-shadow duration-200"
+                    onclick="window.location.href='/tank/2'">
+                    <div class="flex items-center justify-between mb-1">
+                        <h3 class="font-bold text-lg text-slate-800">🐟 魚缸 2</h3>
+                        <div class="flex items-center gap-1">
+                            <span class="text-xs text-slate-400" id="update-time-2">--</span>
+                            <button onclick="openSettings(2,event)" class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/70 text-slate-400 hover:text-slate-600 transition" title="設定標準範圍">⚙️</button>
+                        </div>
+                    </div>
+                    <div id="card-ph-2" class="p-4 rounded-2xl plant-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🧪</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-ph-2">--</div>
+                                <div class="text-xs opacity-90" id="label-ph-2">pH（標準 6.5–7.5）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-temp-2" class="p-4 rounded-2xl fish-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🌡️</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-temp-2">--</div>
+                                <div class="text-xs opacity-90" id="label-temp-2">°C（標準 22–27）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-do-2" class="p-4 rounded-2xl water-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">💧</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-do-2">--</div>
+                                <div class="text-xs opacity-90" id="label-do-2">mg/L（標準 6.0–8.0）</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 魚缸 3 -->
+                <div class="glass-card rounded-3xl p-5 shadow-xl border border-white/50 space-y-3 cursor-pointer hover:shadow-2xl transition-shadow duration-200"
+                    onclick="window.location.href='/tank/3'">
+                    <div class="flex items-center justify-between mb-1">
+                        <h3 class="font-bold text-lg text-slate-800">🐟 魚缸 3</h3>
+                        <div class="flex items-center gap-1">
+                            <span class="text-xs text-slate-400" id="update-time-3">--</span>
+                            <button onclick="openSettings(3,event)" class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/70 text-slate-400 hover:text-slate-600 transition" title="設定標準範圍">⚙️</button>
+                        </div>
+                    </div>
+                    <div id="card-ph-3" class="p-4 rounded-2xl plant-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🧪</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-ph-3">--</div>
+                                <div class="text-xs opacity-90" id="label-ph-3">pH（標準 6.5–7.5）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-temp-3" class="p-4 rounded-2xl fish-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">🌡️</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-temp-3">--</div>
+                                <div class="text-xs opacity-90" id="label-temp-3">°C（標準 22–27）</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="card-do-3" class="p-4 rounded-2xl water-gradient shadow-md transition-all duration-300">
+                        <div class="flex justify-between items-center">
+                            <div class="text-3xl">💧</div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold" id="val-do-3">--</div>
+                                <div class="text-xs opacity-90" id="label-do-3">mg/L（標準 6.0–8.0）</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- 警報紀錄 -->
+        <section>
+            <div class="glass-card rounded-3xl p-6 shadow-xl space-y-4 border border-white">
+                <h3 class="font-bold text-xl text-slate-800 flex items-center gap-2">🚨 <span>最新警報紀錄</span></h3>
+                <div id="alert-list" class="space-y-3 h-48 overflow-y-auto pr-2">
+                    <div id="no-alert-msg"
+                        class="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-slate-400 text-sm">
+                        尚無警報紀錄
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Surveillance Fullscreen Modal -->
+    <div id="surv-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onclick="closeSurvModal()">
+        <div class="relative w-full max-w-4xl" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-2">
+                <span id="surv-modal-title" class="text-white font-bold text-lg">📡 監控攝影機</span>
+                <button onclick="closeSurvModal()" class="text-white/70 hover:text-white text-2xl leading-none transition">✕</button>
+            </div>
+            <img id="surv-modal-feed" src="" alt="Surveillance" class="w-full rounded-2xl shadow-2xl bg-slate-900">
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4">
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="closeSettings()"></div>
+        <!-- Mobile: max-w-[310px] compact | Desktop: max-w-2xl 3-column -->
+        <div class="glass-card relative rounded-3xl p-4 md:p-6 w-full max-w-[310px] md:max-w-2xl shadow-2xl z-10 border border-white/70">
+            <div class="flex items-center justify-between mb-3 md:mb-5">
+                <h3 id="settings-title" class="font-bold text-base md:text-lg text-slate-800">⚙️ 標準範圍設定</h3>
+                <button onclick="closeSettings()" class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition font-bold">✕</button>
+            </div>
+
+            <!-- Mobile: vertical stack | Desktop: 3-column row -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-4">
+
+                <!-- pH -->
+                <div class="bg-blue-50/70 rounded-2xl p-3 md:p-4 border border-blue-100">
+                    <div class="text-xs md:text-sm font-semibold text-blue-700 mb-2 md:mb-3">🧪 pH 範圍</div>
+                    <div class="flex items-end justify-around">
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最小</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider" id="s-ph-min" min="0" max="14" step="0.1" oninput="liveUpdate('ph','min',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-blue-600 w-12 text-center" id="d-ph-min">6.5</span>
+                        </div>
+                        <div class="w-8 h-8 md:w-9 md:h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-500 text-xs font-bold self-center mb-5">pH</div>
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最大</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider" id="s-ph-max" min="0" max="14" step="0.1" oninput="liveUpdate('ph','max',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-blue-600 w-12 text-center" id="d-ph-max">7.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Temperature -->
+                <div class="bg-orange-50/70 rounded-2xl p-3 md:p-4 border border-orange-100">
+                    <div class="text-xs md:text-sm font-semibold text-orange-700 mb-2 md:mb-3">🌡️ 溫度 (°C) 範圍</div>
+                    <div class="flex items-end justify-around">
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最小</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider v-slider-temp" id="s-temp-min" min="0" max="50" step="0.5" oninput="liveUpdate('temp','min',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-orange-500 w-12 text-center" id="d-temp-min">22</span>
+                        </div>
+                        <div class="w-8 h-8 md:w-9 md:h-9 rounded-full bg-orange-100 flex items-center justify-center text-orange-500 text-xs font-bold self-center mb-5">°C</div>
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最大</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider v-slider-temp" id="s-temp-max" min="0" max="50" step="0.5" oninput="liveUpdate('temp','max',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-orange-500 w-12 text-center" id="d-temp-max">27</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- DO -->
+                <div class="bg-cyan-50/70 rounded-2xl p-3 md:p-4 border border-cyan-100">
+                    <div class="text-xs md:text-sm font-semibold text-cyan-700 mb-2 md:mb-3">💧 溶氧量 (mg/L) 範圍</div>
+                    <div class="flex items-end justify-around">
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最小</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider v-slider-do" id="s-do-min" min="0" max="20" step="0.1" oninput="liveUpdate('do','min',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-cyan-600 w-12 text-center" id="d-do-min">6.0</span>
+                        </div>
+                        <div class="w-8 h-8 md:w-9 md:h-9 rounded-full bg-cyan-100 flex items-center justify-center text-cyan-500 text-xs font-bold self-center mb-5">DO</div>
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-xs text-slate-400">最大</span>
+                            <div class="v-slider-wrap">
+                                <input type="range" class="v-slider v-slider-do" id="s-do-max" min="0" max="20" step="0.1" oninput="liveUpdate('do','max',this.value)">
+                            </div>
+                            <span class="text-sm font-bold text-cyan-600 w-12 text-center" id="d-do-max">8.0</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <button onclick="saveSettings()" class="mt-3 md:mt-5 w-full py-2.5 md:py-3 bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-bold rounded-xl shadow-md hover:opacity-90 transition text-sm md:text-base">✓ 儲存設定</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 時鐘 ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock-date').innerText = now.toLocaleDateString('zh-TW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            document.getElementById('clock-time').innerText = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // --- 攝影機切換 ---
+        const cameraToggle = document.getElementById('camera-toggle');
+        const liveFeed = document.getElementById('live-feed');
+        const cameraOffMsg = document.getElementById('camera-off-msg');
+        const cameraBadge = document.getElementById('camera-badge');
+        const cameraStatusText = document.getElementById('camera-status-text');
+
+        cameraToggle.addEventListener('change', () => {
+            if (cameraToggle.checked) {
+                liveFeed.style.display = 'block';
+                cameraOffMsg.style.display = 'none';
+                cameraBadge.style.display = 'block';
+                cameraStatusText.innerText = '開啟';
+                cameraStatusText.classList.remove('text-slate-400');
+            } else {
+                liveFeed.style.display = 'none';
+                cameraOffMsg.style.display = 'flex';
+                cameraBadge.style.display = 'none';
+                cameraStatusText.innerText = '關閉';
+                cameraStatusText.classList.add('text-slate-400');
+            }
+        });
+
+        // --- 標準範圍管理 ---
+        const DEFAULT_RANGES = { ph: [6.5, 7.5], temp: [22, 27], do: [6.0, 8.0] };
+
+        function loadRanges(tankId) {
+            const stored = localStorage.getItem(`ranges_tank_${tankId}`);
+            return stored ? JSON.parse(stored) : JSON.parse(JSON.stringify(DEFAULT_RANGES));
+        }
+
+        function saveRangesData(tankId, r) {
+            localStorage.setItem(`ranges_tank_${tankId}`, JSON.stringify(r));
+        }
+
+        function updateRangeLabels(tankId, r) {
+            const fmt = v => Number.isInteger(v) ? v : parseFloat(v).toFixed(1);
+            const el = (id) => document.getElementById(id);
+            if (el(`label-ph-${tankId}`)) el(`label-ph-${tankId}`).innerText = `pH（標準 ${fmt(r.ph[0])}–${fmt(r.ph[1])}）`;
+            if (el(`label-temp-${tankId}`)) el(`label-temp-${tankId}`).innerText = `°C（標準 ${fmt(r.temp[0])}–${fmt(r.temp[1])}）`;
+            if (el(`label-do-${tankId}`)) el(`label-do-${tankId}`).innerText = `mg/L（標準 ${fmt(r.do[0])}–${fmt(r.do[1])}）`;
+        }
+
+        let currentTankId = null;
+
+        function openSettings(tankId, e) {
+            e.stopPropagation();
+            currentTankId = tankId;
+            document.getElementById('settings-title').innerText = `⚙️ 魚缸 ${tankId} 標準範圍設定`;
+            const r = loadRanges(tankId);
+            ['ph', 'temp', 'do'].forEach(s => {
+                document.getElementById(`s-${s}-min`).value = r[s][0];
+                document.getElementById(`s-${s}-max`).value = r[s][1];
+                document.getElementById(`d-${s}-min`).innerText = parseFloat(r[s][0]).toFixed(1);
+                document.getElementById(`d-${s}-max`).innerText = parseFloat(r[s][1]).toFixed(1);
+            });
+            document.getElementById('settings-modal').classList.remove('hidden');
+        }
+
+        function closeSettings() {
+            document.getElementById('settings-modal').classList.add('hidden');
+            currentTankId = null;
+        }
+
+        function liveUpdate(sensor, side, value) {
+            document.getElementById(`d-${sensor}-${side}`).innerText = parseFloat(value).toFixed(1);
+        }
+
+        function saveSettings() {
+            if (!currentTankId) return;
+            const r = {
+                ph: [parseFloat(document.getElementById('s-ph-min').value), parseFloat(document.getElementById('s-ph-max').value)],
+                temp: [parseFloat(document.getElementById('s-temp-min').value), parseFloat(document.getElementById('s-temp-max').value)],
+                do: [parseFloat(document.getElementById('s-do-min').value), parseFloat(document.getElementById('s-do-max').value)]
+            };
+            ['ph', 'temp', 'do'].forEach(s => { if (r[s][0] > r[s][1]) r[s].reverse(); });
+            saveRangesData(currentTankId, r);
+            updateRangeLabels(currentTankId, r);
+            closeSettings();
+            fetchTankData(currentTankId);
+        }
+
+        // --- 警報系統 ---
+        let alertCount = 0;
+        const alertState = {};
+
+        function checkAlert(cardId, value, min, max, alertName, normalClass) {
+            const card = document.getElementById(cardId);
+            if (!card) return;
+            const v = parseFloat(value);
+            if (isNaN(v)) return;
+
+            if (v < min || v > max) {
+                card.classList.add('bg-danger');
+                card.classList.remove('plant-gradient', 'water-gradient', 'fish-gradient', 'amber-gradient');
+                if (!alertState[cardId]) {
+                    alertState[cardId] = true;
+                    addAlertLog(alertName, value);
+                }
+            } else {
+                card.classList.remove('bg-danger');
+                // amber-gradient will be re-evaluated by analyzeTrend right after
+                if (!card.classList.contains('amber-gradient')) {
+                    card.classList.add(normalClass);
+                }
+                alertState[cardId] = false;
+            }
+        }
+
+        function addAlertLog(title, value) {
+            const placeholder = document.getElementById('no-alert-msg');
+            if (placeholder) placeholder.remove();
+
+            const list = document.getElementById('alert-list');
+            if (list.children.length >= 5) list.removeChild(list.lastChild);
+
+            const now = new Date();
+            const timeStr = (now.getMonth()+1) + '/' + now.getDate() + ' ' + now.toLocaleDateString('zh-TW', { weekday: 'short' }) + ' ' + now.toLocaleTimeString('zh-TW');
+
+            list.insertAdjacentHTML('afterbegin', `
+                <div class="flex items-center gap-4 p-4 bg-red-50/90 rounded-2xl border border-red-200">
+                    <span class="text-2xl">🚨</span>
+                    <div>
+                        <div class="text-base font-bold text-red-800">${title}（${value}）</div>
+                        <div class="text-xs text-red-600 font-medium">${timeStr}</div>
+                    </div>
+                </div>
+            `);
+
+            alertCount++;
+            const badge = document.getElementById('alert-badge');
+            badge.innerText = alertCount;
+            badge.classList.remove('hidden');
+        }
+
+        function addTrendAlertLog(title, value, direction, etaSec) {
+            const placeholder = document.getElementById('no-alert-msg');
+            if (placeholder) placeholder.remove();
+
+            const list = document.getElementById('alert-list');
+            if (list.children.length >= 5) list.removeChild(list.lastChild);
+
+            const now = new Date();
+            const timeStr = (now.getMonth()+1) + '/' + now.getDate() + ' ' + now.toLocaleDateString('zh-TW', { weekday: 'short' }) + ' ' + now.toLocaleTimeString('zh-TW');
+            const etaText = etaSec > 0 ? `預計約 ${etaSec} 秒後超出範圍` : '即將超出範圍';
+
+            list.insertAdjacentHTML('afterbegin', `
+                <div class="flex items-center gap-4 p-4 bg-amber-50/90 rounded-2xl border border-amber-200">
+                    <span class="text-2xl">⚠️</span>
+                    <div>
+                        <div class="text-base font-bold text-amber-800">${direction}｜${title}（${value}）</div>
+                        <div class="text-xs text-amber-600 font-medium">${etaText}・${timeStr}</div>
+                    </div>
+                </div>
+            `);
+
+            alertCount++;
+            const badge = document.getElementById('alert-badge');
+            badge.innerText = alertCount;
+            badge.classList.remove('hidden');
+        }
+
+        // --- ระบบวิเคราะห์แนวโน้ม (Trend Analysis) ---
+        const trendBuffer = {};
+        const TREND_BUF_SIZE = 12;  // เก็บ 12 ค่าล่าสุด (~60 วินาที)
+        const TREND_WARN_STEPS = 10; // ฉายอนาคตไป 10 ค่า (~50 วินาที)
+
+        function pushTrend(key, value) {
+            if (!trendBuffer[key]) trendBuffer[key] = [];
+            trendBuffer[key].push(parseFloat(value));
+            if (trendBuffer[key].length > TREND_BUF_SIZE) trendBuffer[key].shift();
+        }
+
+        // Linear regression slope (y per step)
+        function calcSlope(values) {
+            const n = values.length;
+            if (n < 4) return 0;
+            let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+            for (let i = 0; i < n; i++) {
+                sumX += i; sumY += values[i];
+                sumXY += i * values[i]; sumX2 += i * i;
+            }
+            const denom = n * sumX2 - sumX * sumX;
+            return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+        }
+
+        function analyzeTrend(cardId, trendKey, value, min, max, label, tankId, normalClass) {
+            const v = parseFloat(value);
+            pushTrend(trendKey, v);
+            const buf = trendBuffer[trendKey];
+            if (!buf || buf.length < 5) return;
+
+            const card = document.getElementById(cardId);
+            if (!card) return;
+
+            // ถ้าเกินเกณฑ์แล้ว (bg-danger) ให้ลบสีส้มออก ไม่ต้องทำ trend
+            if (card.classList.contains('bg-danger')) {
+                card.classList.remove('amber-gradient');
+                return;
+            }
+
+            const slope = calcSlope(buf);
+            const projected = v + slope * TREND_WARN_STEPS;
+            const withinRange = v >= min && v <= max;
+
+            const willBreachMin = withinRange && slope < 0 && projected < min;
+            const willBreachMax = withinRange && slope > 0 && projected > max;
+            const warnKey = `tw-${trendKey}`;
+
+            if (willBreachMin || willBreachMax) {
+                // เปลี่ยนสีการ์ดเป็นสีส้ม
+                card.classList.remove('plant-gradient', 'fish-gradient', 'water-gradient');
+                card.classList.add('amber-gradient');
+
+                const dir = willBreachMin ? '📉 下降趨勢' : '📈 上升趨勢';
+                const threshold = willBreachMin ? min : max;
+                const stepsToBreath = Math.abs((v - threshold) / slope);
+                const etaSec = Math.max(0, Math.round(stepsToBreath * 5));
+
+                if (!alertState[warnKey]) {
+                    alertState[warnKey] = true;
+                    addTrendAlertLog(`魚缸 ${tankId} ${label}`, value, dir, etaSec);
+                    sendTrendTelegramAlert(tankId, label, value, dir, etaSec);
+                }
+            } else {
+                // กลับสีปกติ
+                card.classList.remove('amber-gradient');
+                if (!card.classList.contains('plant-gradient') &&
+                    !card.classList.contains('fish-gradient') &&
+                    !card.classList.contains('water-gradient')) {
+                    card.classList.add(normalClass);
+                }
+                alertState[warnKey] = false;
+            }
+        }
+
+        async function sendTrendTelegramAlert(tankId, sensor, value, direction, etaSec) {
+            try {
+                await fetch('/api/send-trend-alert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tank_id: tankId, sensor, value, direction, eta_sec: etaSec })
+                });
+            } catch (e) { console.error('Trend Telegram error:', e); }
+        }
+
+        // --- 從 API 取得感測器數據 ---
+        async function fetchTankData(tankId) {
+            try {
+                const res = await fetch(`/api/sensor-data/tank/${tankId}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data || data.error) return;
+
+                const ph    = parseFloat(data.pH            ?? 0).toFixed(1);
+                const temp  = parseFloat(data.Temperature_C ?? 0).toFixed(1);
+                const doVal = parseFloat(data.DO_mgl        ?? 0).toFixed(1);
+
+                // แสดง '--' เมื่อค่าเป็น 0 (ค่าที่เป็นไปไม่ได้จริง)
+                document.getElementById(`val-ph-${tankId}`).innerText   = parseFloat(ph)    === 0 ? '--' : ph;
+                document.getElementById(`val-temp-${tankId}`).innerText = parseFloat(temp)  === 0 ? '--' : temp;
+                document.getElementById(`val-do-${tankId}`).innerText   = parseFloat(doVal) === 0 ? '--' : doVal;
+
+                if (data.timestamp) {
+                    const t = new Date(data.timestamp).toLocaleTimeString('zh-TW');
+                    document.getElementById(`update-time-${tankId}`).innerText = `更新 ${t}`;
+                }
+
+                const r = loadRanges(tankId);
+
+                // ตรวจ sensor fault ก่อน — ถ้า fault ข้ามการแจ้งเตือนปกติ
+                const phFault   = checkSensorFault(`card-ph-${tankId}`,   `ph-${tankId}`,   ph,    'plant-gradient', 'pH', tankId);
+                const tempFault = checkSensorFault(`card-temp-${tankId}`, `temp-${tankId}`, temp,  'fish-gradient',  '溫度', tankId);
+                const doFault   = checkSensorFault(`card-do-${tankId}`,   `do-${tankId}`,   doVal, 'water-gradient', 'DO', tankId);
+
+                if (!phFault) {
+                    checkAlert(`card-ph-${tankId}`, ph, r.ph[0], r.ph[1], `魚缸 ${tankId} - pH 超出標準值！`, 'plant-gradient');
+                    analyzeTrend(`card-ph-${tankId}`, `ph-${tankId}`, ph, r.ph[0], r.ph[1], 'pH', tankId, 'plant-gradient');
+                }
+                if (!tempFault) {
+                    checkAlert(`card-temp-${tankId}`, temp, r.temp[0], r.temp[1], `魚缸 ${tankId} - 溫度超出標準值！`, 'fish-gradient');
+                    analyzeTrend(`card-temp-${tankId}`, `temp-${tankId}`, temp, r.temp[0], r.temp[1], '溫度', tankId, 'fish-gradient');
+                }
+                if (!doFault) {
+                    checkAlert(`card-do-${tankId}`, doVal, r.do[0], r.do[1], `魚缸 ${tankId} - DO 超出標準值！`, 'water-gradient');
+                    analyzeTrend(`card-do-${tankId}`, `do-${tankId}`, doVal, r.do[0], r.do[1], 'DO', tankId, 'water-gradient');
+                }
+            } catch (e) {
+                console.error(`Tank ${tankId} fetch error:`, e);
+            }
+        }
+
+        async function fetchDetectionStats() {
+            try {
+                const res = await fetch('/api/detection-stats');
+                if (!res.ok) return;
+                const data = await res.json();
+                document.getElementById('stat-current').innerText = data.current_people ?? 0;
+                document.getElementById('stat-daily').innerText = data.daily_total ?? 0;
+                document.getElementById('stat-last').innerText = data.last_detection ?? '-';
+            } catch (e) { }
+        }
+
+        // --- ระบบตรวจจับเซนเซอร์ขัดข้อง ---
+        const zeroCount = {};
+        const ZERO_FAULT_THRESHOLD = 5; // 5 ครั้งติดกัน (~25 วิ) ถือว่าขัดข้อง
+
+        function checkSensorFault(cardId, faultKey, value, normalClass, sensorLabel, tankId) {
+            const v = parseFloat(value);
+            const card = document.getElementById(cardId);
+            if (!card) return false;
+
+            if (v === 0) {
+                zeroCount[faultKey] = (zeroCount[faultKey] || 0) + 1;
+
+                if (zeroCount[faultKey] >= ZERO_FAULT_THRESHOLD) {
+                    card.classList.remove('plant-gradient', 'fish-gradient', 'water-gradient',
+                                         'amber-gradient', 'bg-danger');
+                    card.classList.add('sensor-fault');
+
+                    if (!alertState[`fault-${faultKey}`]) {
+                        alertState[`fault-${faultKey}`] = true;
+                        addFaultAlertLog(tankId, sensorLabel);
+                        sendFaultTelegramAlert(tankId, sensorLabel);
+                    }
+                }
+                return true; // ค่าเป็น 0 → ไม่ต้องเช็ค alert ปกติ
+            } else {
+                // ค่ากลับมาแล้ว → เคลียร์สถานะขัดข้อง
+                if (zeroCount[faultKey] > 0) {
+                    zeroCount[faultKey] = 0;
+                    card.classList.remove('sensor-fault');
+                    card.classList.add(normalClass);
+                    alertState[`fault-${faultKey}`] = false;
+                }
+                return false;
+            }
+        }
+
+        function addFaultAlertLog(tankId, sensorLabel) {
+            const placeholder = document.getElementById('no-alert-msg');
+            if (placeholder) placeholder.remove();
+
+            const list = document.getElementById('alert-list');
+            if (list.children.length >= 5) list.removeChild(list.lastChild);
+
+            const now = new Date();
+            const timeStr = (now.getMonth()+1) + '/' + now.getDate() + ' ' + now.toLocaleDateString('zh-TW', { weekday: 'short' }) + ' ' + now.toLocaleTimeString('zh-TW');
+
+            list.insertAdjacentHTML('afterbegin', `
+                <div class="flex items-center gap-4 p-4 bg-slate-100 rounded-2xl border border-slate-300">
+                    <span class="text-2xl">🔌</span>
+                    <div>
+                        <div class="text-base font-bold text-slate-700">感測器異常｜魚缸 ${tankId} - ${sensorLabel}</div>
+                        <div class="text-xs text-slate-500 font-medium">持續回傳 0，請檢查感測器・${timeStr}</div>
+                    </div>
+                </div>
+            `);
+
+            alertCount++;
+            const badge = document.getElementById('alert-badge');
+            badge.innerText = alertCount;
+            badge.classList.remove('hidden');
+        }
+
+        async function sendFaultTelegramAlert(tankId, sensorLabel) {
+            try {
+                await fetch('/api/send-fault-alert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tank_id: tankId, sensor: sensorLabel })
+                });
+            } catch (e) { console.error('Fault Telegram error:', e); }
+        }
+
+        [1, 2, 3].forEach(tid => updateRangeLabels(tid, loadRanges(tid)));
+
+        // Stagger polling — spread 5 requests evenly across the 5s window
+        fetchTankData(1);
+        setInterval(() => fetchTankData(1), 5000);
+        setTimeout(() => { fetchTankData(2); setInterval(() => fetchTankData(2), 5000); }, 850);
+        setTimeout(() => { fetchTankData(3); setInterval(() => fetchTankData(3), 5000); }, 1700);
+        setTimeout(() => { fetchDetectionStats(); setInterval(fetchDetectionStats, 5000); }, 2550);
+
+        // --- 監控攝影機 ---
+        const survOnline = { 1: false, 2: false, 3: false };
+
+        function applySurvStatus(camId, online) {
+            const feed    = document.getElementById(`surv-feed-${camId}`);
+            const offline = document.getElementById(`surv-offline-${camId}`);
+            const dot     = document.getElementById(`dot-cam-${camId}`);
+
+            if (online && !survOnline[camId]) {
+                // เพิ่งออนไลน์ → เริ่ม stream
+                feed.src = `/video_feed/${camId}`;
+                feed.classList.remove('hidden');
+                offline.classList.add('hidden');
+                dot.classList.replace('bg-slate-300', 'bg-green-400');
+            } else if (!online && survOnline[camId]) {
+                // เพิ่งออฟไลน์ → หยุด stream
+                feed.src = '';
+                feed.classList.add('hidden');
+                offline.classList.remove('hidden');
+                dot.classList.replace('bg-green-400', 'bg-slate-300');
+            }
+            survOnline[camId] = online;
+        }
+
+        async function fetchCamerasStatus() {
+            try {
+                const res = await fetch('/api/cameras/status');
+                if (!res.ok) return;
+                const data = await res.json();
+                [1, 2, 3].forEach(id => applySurvStatus(id, !!data[String(id)]));
+            } catch (e) { console.error('Camera status error:', e); }
+        }
+
+        function openSurvModal(camId) {
+            if (!survOnline[camId]) return;
+            document.getElementById('surv-modal-title').innerText = `📡 監控攝影機 ${camId}`;
+            document.getElementById('surv-modal-feed').src = `/video_feed/${camId}`;
+            document.getElementById('surv-modal').classList.remove('hidden');
+        }
+
+        function closeSurvModal() {
+            document.getElementById('surv-modal').classList.add('hidden');
+            document.getElementById('surv-modal-feed').src = '';
+        }
+
+        setTimeout(() => { fetchCamerasStatus(); setInterval(fetchCamerasStatus, 5000); }, 3400);
+    </script>
+</body>
+
+</html>

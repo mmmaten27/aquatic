@@ -1,0 +1,1 @@
+& "C:\Users\ITM_Student_06\Desktop\PROJECT-2026-main\zrok2.exe" share public http://localhost:5000
