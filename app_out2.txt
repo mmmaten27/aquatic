@@ -1,0 +1,28 @@
+
+============================================================
+🐟 AQUAPONICS MONITORING SYSTEM
+============================================================
+🤖 加載 YOLO 模型...
+✅ AI DETECTION: YOLO 模型加載成功
+✅ DB: detection_logs table ready
+✅ DB: users table ready
+
+🎯 初始化 YOLO 攝影機 (index 2)...
+  ✅ YOLO CAM (index 2): Online
+
+📡 初始化監控攝影機...
+  ✅ 攝影機 1 (index 3): Online
+  ✅ 攝影機 2 (index 0): Online
+  ✅ 攝影機 3 (index 1): Online
+
+🚀 Starting server...
+📍 http://0.0.0.0:5000
+✅ System ready! Press Ctrl+C to stop
+
+🚀 使用 Waitress production server (threads=32)
+✅ GET DATA: tank1 data retrieved successfully
+✅ GET DATA: tank3 data retrieved successfully
+✅ GET DATA: tank2 data retrieved successfully
+✅ GET DATA: tank2 data retrieved successfully
+✅ GET DATA: tank1 data retrieved successfully✅ GET DATA: tank3 data retrieved successfully
+

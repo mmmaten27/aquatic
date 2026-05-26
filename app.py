@@ -14,6 +14,7 @@ import sys
 from ultralytics import YOLO
 from detection import MIN_CONFIDENCE
 from detection.config import TELEGRAM_TOKEN, CHAT_ID, COOLDOWN_SECONDS
+from detection.camera_utils import get_calibrated_indices, get_cameras_with_device_path
 
 app = Flask(__name__)
 app.secret_key = 'aquatic_secret_key_2024'
@@ -52,8 +53,7 @@ current_person_count = 0
 daily_detection_total = 0
 last_detection_timestamp = "-"
 
-# ── YOLO camera (physical index 3) → 即時 - YOLO AI section ──
-YOLO_CAM_IDX    = 2
+# ── YOLO camera → 即時 - YOLO AI section ──
 yolo_cap         = None
 yolo_frame       = None
 yolo_frame_count = 0
@@ -61,9 +61,26 @@ yolo_lock        = threading.Lock()
 yolo_online      = False
 
 # ── Surveillance cameras: logical ID → physical index ──────────
-#    攝影機 1 = cam 3 │ 攝影機 2 = cam 0 │ 攝影機 3 = cam 1
-SURV_IDS     = [1, 2, 3]
-SURV_CAM_IDX = {1: 3, 2: 0, 3: 1}
+#    Dynamically assigned via camera_utils on startup / reconnect
+SURV_IDS = [1, 2, 3]
+
+def refresh_camera_indices():
+    """Update YOLO_CAM_IDX and SURV_CAM_IDX from live camera enumeration."""
+    global YOLO_CAM_IDX, SURV_CAM_IDX
+    try:
+        mapping, _ = get_calibrated_indices()
+        YOLO_CAM_IDX = mapping.get('yolo', 2)
+        SURV_CAM_IDX = {
+            1: mapping.get('cam1', 3),
+            2: mapping.get('cam2', 0),
+            3: mapping.get('cam3', 1),
+        }
+        print(f"📷 Camera indices refreshed: YOLO={YOLO_CAM_IDX}, "
+              f"攝影機={SURV_CAM_IDX}")
+    except Exception as e:
+        print(f"⚠️ Camera index refresh failed: {e}")
+
+refresh_camera_indices()
 surv_caps         = {}
 surv_frames       = {}
 surv_frame_counts = {i: 0 for i in SURV_IDS}
@@ -88,17 +105,34 @@ def close_all_cameras():
         except Exception as e:
             print(f"❌ 攝影機 {cam_id}: 關閉失敗 - {e}")
     surv_caps.clear()
-    surv_caps.clear()
 
 def surv_capture_loop(cam_id, phys_idx):
     """cam_id = logical display ID (1/2/3), phys_idx = physical camera index."""
     global surv_frames, surv_frame_counts, surv_online, surv_caps, running
-    frame_interval = 1.0 / 15
+    frame_interval = 1.0 / 5
+    surv_idle_loops = 0
     while running:
         try:
             t0 = time.time()
             cap_obj = surv_caps.get(cam_id)
             if not cap_obj:
+                surv_idle_loops += 1
+                # Try to reinitialize camera every ~15 seconds when offline
+                if surv_idle_loops >= 30:
+                    surv_idle_loops = 0
+                    refresh_camera_indices()
+                    cur_idx = SURV_CAM_IDX.get(cam_id, phys_idx)
+                    print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 嘗試重新初始化...")
+                    c = cv2.VideoCapture(cur_idx, cv2.CAP_DSHOW)
+                    if c.isOpened():
+                        c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+                        c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                        surv_caps[cam_id]   = c
+                        surv_online[cam_id] = True
+                        print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 重新初始化成功")
+                    else:
+                        c.release()
                 time.sleep(0.5)
                 continue
             success, img = cap_obj.read()
@@ -111,18 +145,21 @@ def surv_capture_loop(cam_id, phys_idx):
                         old_cap.release()
                     except Exception:
                         pass
-                new_cap = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
+                surv_caps[cam_id] = None
+                refresh_camera_indices()
+                cur_idx = SURV_CAM_IDX.get(cam_id, phys_idx)
+                new_cap = cv2.VideoCapture(cur_idx, cv2.CAP_DSHOW)
                 if new_cap.isOpened():
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     surv_caps[cam_id] = new_cap
                     surv_online[cam_id] = True
-                    print(f"🔄 攝影機 {cam_id} (index {phys_idx}): 重新連接成功")
+                    print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 重新連接成功")
                 else:
                     new_cap.release()
                 continue
-            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 65])
+            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 50])
             if ret:
                 with surv_locks[cam_id]:
                     surv_frames[cam_id] = buf.tobytes()
@@ -141,16 +178,25 @@ def yolo_capture_loop():
     global model, last_telegram_sent, running
     global current_person_count, daily_detection_total, last_detection_timestamp
 
-    frame_interval = 1.0 / 20   # 20 fps target
+    frame_interval = 1.0 / 10   # 10 fps target
     detect_every   = 3
     local_count    = 0
     last_boxes     = []
+    idle_loops     = 0
+    last_frame_time = 0
 
     while running:
         try:
             t0 = time.time()
 
             if yolo_cap is None:
+                idle_loops += 1
+                # Refresh camera indices in case USB re-enumeration happened
+                if idle_loops >= 30:
+                    idle_loops = 0
+                    refresh_camera_indices()
+                    print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 嘗試重新初始化...")
+                    init_yolo_camera()
                 time.sleep(0.5)
                 continue
 
@@ -162,6 +208,12 @@ def yolo_capture_loop():
                     yolo_cap.release()
                 except Exception:
                     pass
+                yolo_cap = None
+                # Refresh indices before reconnect (cameras may have shifted)
+                refresh_camera_indices()
+                now = time.time()
+                if last_frame_time > 0 and (now - last_frame_time) > 3:
+                    print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 強制重新連接 (逾時 {now - last_frame_time:.1f}s)")
                 new_cap = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
                 if new_cap.isOpened():
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
@@ -169,10 +221,13 @@ def yolo_capture_loop():
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
                     yolo_cap    = new_cap
                     yolo_online = True
+                    last_frame_time = time.time()
                     print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 重新連接成功")
                 else:
                     new_cap.release()
                 continue
+
+            last_frame_time = time.time()
 
             local_count += 1
 
@@ -200,17 +255,18 @@ def yolo_capture_loop():
                         image_path     = os.path.join("detection", "captures", image_filename)
                         cv2.imwrite(image_path, img)
 
+                        conn = get_db_connection()
                         try:
-                            conn = get_db_connection()
                             with conn.cursor() as cur:
                                 cur.execute(
                                     "INSERT INTO detection_logs (person_count, image_filename) VALUES (%s, %s)",
                                     (count, image_filename)
                                 )
                                 conn.commit()
-                            conn.close()
                         except Exception as e:
                             print(f"❌ DB: 記錄偵測失敗 - {e}")
+                        finally:
+                            conn.close()
 
                         msg = (f"🚨 偵測到人員！\n👥 偵測到: {count} 人\n"
                                f"🕐 {time.strftime('%Y/%m/%d %H:%M:%S')}\n📍 魚菜共生監控系統")
@@ -225,7 +281,7 @@ def yolo_capture_loop():
                 cv2.putText(img, f"Person {float(box.conf[0]):.0%}",
                             (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 50])
             if ret:
                 with yolo_lock:
                     yolo_frame        = buf.tobytes()
@@ -243,17 +299,20 @@ def yolo_capture_loop():
 def generate_yolo_stream():
     """Yield cached YOLO frames — one generator per HTTP client."""
     last_count = -1
-    while running:
-        count = yolo_frame_count
-        if count != last_count:
-            last_count = count
-            with yolo_lock:
-                f = yolo_frame
-            if f:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + f + b'\r\n')
-        else:
-            time.sleep(0.01)
+    try:
+        while running:
+            count = yolo_frame_count
+            if count != last_count:
+                last_count = count
+                with yolo_lock:
+                    f = yolo_frame
+                if f:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + f + b'\r\n')
+            else:
+                time.sleep(0.01)
+    except GeneratorExit:
+        pass
 
 
 def init_yolo_camera():
@@ -266,7 +325,7 @@ def init_yolo_camera():
             return
         c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        c.set(cv2.CAP_PROP_FPS,          20)
+        c.set(cv2.CAP_PROP_FPS,          10)
         c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
         yolo_cap    = c
         yolo_online = True
@@ -287,7 +346,7 @@ def init_surveillance_cameras():
             if c.isOpened():
                 c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                c.set(cv2.CAP_PROP_FPS,          15)
+                c.set(cv2.CAP_PROP_FPS,          5)
                 c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
                 surv_caps[cam_id]   = c
                 surv_online[cam_id] = True
@@ -305,20 +364,23 @@ def init_surveillance_cameras():
 
 def generate_surv_stream(cam_id):
     last_count = -1
-    while running:
-        if not surv_online.get(cam_id):
-            time.sleep(0.1)
-            continue
-        count = surv_frame_counts.get(cam_id, 0)
-        if count != last_count:
-            last_count = count
-            with surv_locks[cam_id]:
-                frame_bytes = surv_frames.get(cam_id)
-            if frame_bytes:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        else:
-            time.sleep(0.01)
+    try:
+        while running:
+            if not surv_online.get(cam_id):
+                time.sleep(0.1)
+                continue
+            count = surv_frame_counts.get(cam_id, 0)
+            if count != last_count:
+                last_count = count
+                with surv_locks[cam_id]:
+                    frame_bytes = surv_frames.get(cam_id)
+                if frame_bytes:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            else:
+                time.sleep(0.01)
+    except GeneratorExit:
+        pass
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C to gracefully shutdown the system"""
@@ -359,8 +421,8 @@ def login_required(f):
     return decorated
 
 def init_users_table():
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -371,15 +433,16 @@ def init_users_table():
                 )
             """)
             connection.commit()
-        connection.close()
         print("✅ DB: users table ready")
     except Exception as e:
         print(f"❌ DB: Failed to init users table - {e}")
+    finally:
+        connection.close()
 
 def init_detection_logs():
     os.makedirs(os.path.join("detection", "captures"), exist_ok=True)
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS detection_logs (
@@ -390,10 +453,11 @@ def init_detection_logs():
                 )
             """)
             connection.commit()
-        connection.close()
         print("✅ DB: detection_logs table ready")
     except Exception as e:
         print(f"❌ DB: Failed to init detection_logs - {e}")
+    finally:
+        connection.close()
 
 
 def normalize_sensor_data(row):
@@ -446,9 +510,10 @@ def send_telegram_notification(message, image_path=None):
         except Exception as e:
             print(f"❌ TELEGRAM: 發送失敗 - {e}")
         finally:
-            # Remove this thread from pool when done
-            if threading.current_thread() in telegram_thread_pool:
+            try:
                 telegram_thread_pool.remove(threading.current_thread())
+            except ValueError:
+                pass
 
     # Send in background thread to avoid blocking
     thread = threading.Thread(target=send_async, daemon=True)
@@ -502,17 +567,18 @@ def send_trend_alert():
 @app.route('/api/sensor-data')
 @login_required
 def get_sensor_data():
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("SELECT * FROM sensordata ORDER BY timestamp DESC LIMIT 1")
             result = cursor.fetchone()
-        connection.close()
         print("✅ GET DATA: Sensor data retrieved successfully")
         return jsonify(normalize_sensor_data(result) or {})
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve sensor data - {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
 
 @app.route('/api/detection-stats')
 @login_required
@@ -535,12 +601,11 @@ def get_tank_sensor_data(tank_id):
     if tank_id not in VALID_TANKS:
         return jsonify({'error': 'Invalid tank ID'}), 400
     table = VALID_TANKS[tank_id]
+    connection = get_tank_db_connection()
     try:
-        connection = get_tank_db_connection()
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT * FROM `{table}` ORDER BY timestamp DESC LIMIT 1")
             result = cursor.fetchone()
-        connection.close()
         normalized = normalize_sensor_data(result) or {}
         if result and result.get('Timestamp'):
             age = (datetime.now() - result['Timestamp']).total_seconds()
@@ -551,11 +616,13 @@ def get_tank_sensor_data(tank_id):
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve {table} data - {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
 
 @app.route('/api/sensor-history/<int:hours>')
 def get_sensor_history(hours):
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM sensordata
@@ -563,13 +630,14 @@ def get_sensor_history(hours):
                 ORDER BY timestamp ASC
             """, (hours,))
             results = cursor.fetchall()
-        connection.close()
         normalized_results = [normalize_sensor_data(row) for row in results]
         print(f"✅ GET DATA: Retrieved {len(normalized_results)} records for last {hours} hours")
         return jsonify(normalized_results)
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve history data - {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
 
 
 @app.after_request
@@ -620,22 +688,22 @@ def api_register():
         return jsonify({'error': '帳號至少需要 3 個字元'}), 400
     if len(password) < 6:
         return jsonify({'error': '密碼至少需要 6 個字元'}), 400
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
             if cursor.fetchone():
-                connection.close()
                 return jsonify({'error': '此帳號已被使用'}), 409
             pw_hash = generate_password_hash(password)
             cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (username, pw_hash))
             connection.commit()
-        connection.close()
         print(f"✅ AUTH: 新用戶註冊 - {username}")
         return jsonify({'message': '註冊成功'})
     except Exception as e:
         print(f"❌ AUTH: 註冊失敗 - {e}")
         return jsonify({'error': '伺服器錯誤，請稍後再試'}), 500
+    finally:
+        connection.close()
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
@@ -644,12 +712,11 @@ def api_login():
     password = (data.get('password') or '').strip()
     if not username or not password:
         return jsonify({'error': '請填寫所有欄位'}), 400
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("SELECT id, password_hash FROM users WHERE username = %s", (username,))
             user = cursor.fetchone()
-        connection.close()
         if not user or not check_password_hash(user['password_hash'], password):
             return jsonify({'error': '帳號或密碼錯誤'}), 401
         session['user_id']  = user['id']
@@ -659,6 +726,8 @@ def api_login():
     except Exception as e:
         print(f"❌ AUTH: 登入失敗 - {e}")
         return jsonify({'error': '伺服器錯誤，請稍後再試'}), 500
+    finally:
+        connection.close()
 
 @app.route('/logout')
 def logout():
@@ -678,8 +747,8 @@ def get_tank_sensor_history(tank_id, hours):
     if tank_id not in VALID_TANKS:
         return jsonify({'error': 'Invalid tank ID'}), 400
     table = VALID_TANKS[tank_id]
+    connection = get_tank_db_connection()
     try:
-        connection = get_tank_db_connection()
         with connection.cursor() as cursor:
             cursor.execute(f"""
                 SELECT * FROM `{table}`
@@ -687,7 +756,6 @@ def get_tank_sensor_history(tank_id, hours):
                 ORDER BY `Timestamp` ASC
             """, (hours,))
             results = cursor.fetchall()
-        connection.close()
         normalized = []
         for r in results:
             nr = normalize_sensor_data(r)
@@ -699,6 +767,8 @@ def get_tank_sensor_history(tank_id, hours):
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve {table} history - {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
 
 @app.route('/history')
 @login_required
@@ -719,8 +789,8 @@ def get_detection_history():
     page  = request.args.get('page',  1,  type=int)
     limit = request.args.get('limit', 12, type=int)
     offset = (page - 1) * limit
+    connection = get_db_connection()
     try:
-        connection = get_db_connection()
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM detection_logs
@@ -736,7 +806,6 @@ def get_detection_history():
                 WHERE DATE(timestamp) = CURDATE()
             """)
             today = cursor.fetchone()['today']
-        connection.close()
         for r in results:
             if r.get('timestamp'):
                 r['timestamp'] = r['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
@@ -744,6 +813,8 @@ def get_detection_history():
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve detection history - {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
 
 @app.route('/video_feed')
 @login_required
@@ -780,8 +851,8 @@ if __name__ == '__main__':
         print("✅ System ready! Press Ctrl+C to stop\n")
         try:
             from waitress import serve
-            print("🚀 使用 Waitress production server (threads=16)")
-            serve(app, host='0.0.0.0', port=5000, threads=16, channel_timeout=300)
+            print("🚀 使用 Waitress production server (threads=32)")
+            serve(app, host='0.0.0.0', port=5000, threads=32, channel_timeout=300)
         except ImportError:
             print("⚠️  Waitress 未安裝，使用 Flask dev server (pip install waitress)")
             app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

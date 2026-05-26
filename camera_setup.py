@@ -20,8 +20,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 YOLO_IDX     = 2          # physical camera index for YOLO
 SURV_IDX_MAP = {          # logical display ID → physical camera index
     1: 3,                 # 攝影機 1  →  camera index 3
-    2: 1,                 # 攝影機 2  →  camera index 1
-    3: 0,                 # 攝影機 3  →  camera index 0
+    2: 0,                 # 攝影機 2  →  camera index 0
+    3: 1,                 # 攝影機 3  →  camera index 1
 }
 # ───────────────────────────────────────────────────────────────
 
