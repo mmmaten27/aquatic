@@ -381,68 +381,47 @@
 
     <main class="max-w-7xl mx-auto p-6 space-y-8 mt-4">
 
-        <!-- 攝影機 + 偵測統計 -->
-        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div
-                class="lg:col-span-2 glass-card rounded-3xl p-6 shadow-xl aspect-video relative overflow-hidden bg-slate-900 flex items-center justify-center border border-white/50">
-                <img src="/video_feed" alt="即時影像" class="w-full h-full object-cover rounded-xl" id="live-feed">
-                <div id="camera-off-msg" class="hidden text-white font-medium flex-col items-center">
-                    <span class="text-5xl mb-3">📷</span>
-                    <span class="text-lg">攝影機已關閉</span>
-                </div>
-                <div class="absolute top-6 left-6 bg-black/70 text-white px-4 py-2 rounded-xl text-sm font-semibold backdrop-blur-md shadow-lg"
-                    id="camera-badge">
-                    <span class="w-2 h-2 inline-block bg-red-500 rounded-full animate-pulse mr-2"></span>
-                    即時 - YOLO AI
-                </div>
-            </div>
+        <!-- กล้อง 4 ตัว 2x2 + Sidebar -->
+        <section class="grid grid-cols-1 xl:grid-cols-3 gap-4 items-stretch">
 
-            <div class="glass-card rounded-3xl p-6 shadow-xl space-y-5 border border-white">
-                <h3 class="font-bold text-xl text-slate-800 flex items-center gap-2">📊 <span>偵測統計</span></h3>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="bg-blue-50 rounded-2xl p-5 border border-blue-100 text-center shadow-sm">
-                        <div class="text-sm text-slate-500 font-semibold mb-1">當前人數</div>
-                        <div class="text-4xl font-black text-blue-600" id="stat-current">0</div>
-                        <div class="text-xs text-slate-400 mt-1">人</div>
+            <!-- กล้อง 2x2 -->
+            <div class="xl:col-span-2 grid grid-cols-2 gap-4">
+
+                <!-- YOLO detection camera -->
+                <div class="glass-card rounded-3xl overflow-hidden shadow-xl border border-white/50">
+                    <div class="flex items-center justify-between px-4 py-2 bg-white/40">
+                        <span class="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                            <span id="camera-badge" class="w-2 h-2 bg-red-500 rounded-full animate-pulse inline-block"></span>
+                            攝影機 1
+                            <span id="camera-status-text" class="text-slate-400 font-normal">開啟</span>
+                        </span>
+                        <label class="switch">
+                            <input type="checkbox" checked id="camera-toggle">
+                            <span class="slider"></span>
+                        </label>
                     </div>
-                    <div class="bg-green-50 rounded-2xl p-5 border border-green-100 text-center shadow-sm">
-                        <div class="text-sm text-slate-500 font-semibold mb-1">今日人次</div>
-                        <div class="text-4xl font-black text-green-600" id="stat-daily">0</div>
-                        <div class="text-xs text-slate-400 mt-1">次</div>
+                    <div class="relative bg-slate-900 aspect-video flex items-center justify-center overflow-hidden">
+                        <img src="/video_feed" alt="即時影像" class="w-full h-full object-cover" id="live-feed">
+                        <div id="camera-off-msg" class="hidden text-white font-medium flex-col items-center justify-center absolute inset-0 bg-slate-900">
+                            <span class="text-4xl mb-2">📷</span>
+                            <span class="text-sm">攝影機已關閉</span>
+                        </div>
                     </div>
                 </div>
-                <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-                    <div class="text-xs text-slate-500 mb-1">最後偵測時間</div>
-                    <div class="text-sm font-semibold text-slate-700" id="stat-last">-</div>
-                </div>
-                <button
-                    class="w-full bg-slate-800 hover:bg-slate-900 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2"
-                    onclick="window.location.href='/history'">
-                    <span class="text-lg">📅</span> <span>查看人員進出歷史紀錄</span>
-                </button>
-            </div>
-        </section>
-
-        <!-- 監控攝影機 3 台 -->
-        <section>
-            <h2 class="text-xl font-bold text-slate-700 mb-4 flex items-center gap-2">
-                📡 <span>監控攝影機</span>
-            </h2>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
 
                 <!-- 攝影機 1 -->
                 <div class="glass-card rounded-3xl overflow-hidden shadow-xl border border-white/50">
                     <div class="flex items-center justify-between px-4 py-2 bg-white/40">
                         <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
                             <span id="dot-cam-1" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
-                            攝影機 1
+                            攝影機 2
                         </span>
                         <button onclick="openSurvModal(1)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
                     </div>
                     <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
-                        <img id="surv-feed-1" src="" alt="攝影機 1" class="w-full h-full object-cover hidden">
+                        <img id="surv-feed-1" src="" alt="攝影機 2" class="w-full h-full object-cover hidden">
                         <div id="surv-offline-1" class="flex flex-col items-center gap-2 text-slate-400">
-                            <span class="text-4xl">📷</span>
+                            <span class="text-3xl">📷</span>
                             <span class="text-xs font-medium">離線</span>
                         </div>
                     </div>
@@ -453,14 +432,14 @@
                     <div class="flex items-center justify-between px-4 py-2 bg-white/40">
                         <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
                             <span id="dot-cam-2" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
-                            攝影機 2
+                            攝影機 3
                         </span>
                         <button onclick="openSurvModal(2)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
                     </div>
                     <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
-                        <img id="surv-feed-2" src="" alt="攝影機 2" class="w-full h-full object-cover hidden">
+                        <img id="surv-feed-2" src="" alt="攝影機 3" class="w-full h-full object-cover hidden">
                         <div id="surv-offline-2" class="flex flex-col items-center gap-2 text-slate-400">
-                            <span class="text-4xl">📷</span>
+                            <span class="text-3xl">📷</span>
                             <span class="text-xs font-medium">離線</span>
                         </div>
                     </div>
@@ -471,20 +450,85 @@
                     <div class="flex items-center justify-between px-4 py-2 bg-white/40">
                         <span class="font-semibold text-slate-700 text-sm flex items-center gap-2">
                             <span id="dot-cam-3" class="w-2 h-2 rounded-full bg-slate-300 inline-block"></span>
-                            攝影機 3
+                            攝影機 4
                         </span>
                         <button onclick="openSurvModal(3)" class="text-xs text-slate-400 hover:text-slate-600 transition px-2 py-1 rounded-lg hover:bg-white/60">⛶ 放大</button>
                     </div>
                     <div class="relative bg-slate-900 aspect-video flex items-center justify-center">
-                        <img id="surv-feed-3" src="" alt="攝影機 3" class="w-full h-full object-cover hidden">
+                        <img id="surv-feed-3" src="" alt="攝影機 4" class="w-full h-full object-cover hidden">
                         <div id="surv-offline-3" class="flex flex-col items-center gap-2 text-slate-400">
-                            <span class="text-4xl">📷</span>
+                            <span class="text-3xl">📷</span>
                             <span class="text-xs font-medium">離線</span>
                         </div>
                     </div>
                 </div>
 
             </div>
+
+            <!-- Sidebar -->
+            <div class="flex flex-col gap-4">
+
+                <!-- สมาชิกที่ตรวจพบล่าสุด -->
+                <div class="glass-card rounded-3xl p-5 shadow-xl border border-white flex-1 flex flex-col">
+                    <h3 class="font-bold text-base text-slate-800 flex items-center gap-2 mb-3">
+                        <span>👁️</span><span>最新偵測成員</span>
+                        <span id="latest-count-badge" class="ml-auto text-xs bg-slate-200 text-slate-600 font-semibold px-2 py-0.5 rounded-full hidden"></span>
+                    </h3>
+                    <!-- Capture image (full scene) -->
+                    <div class="w-full rounded-xl overflow-hidden bg-slate-200 aspect-video mb-3 flex items-center justify-center relative flex-shrink-0">
+                        <img id="latest-capture-img" src="" alt="" class="w-full h-full object-cover hidden">
+                        <div id="latest-capture-placeholder" class="flex flex-col items-center gap-2 text-slate-400">
+                            <span class="text-3xl">🎥</span>
+                            <span class="text-xs font-medium">尚無偵測紀錄</span>
+                        </div>
+                    </div>
+                    <!-- Person list (supports multiple) -->
+                    <div id="latest-persons-list" class="flex-1 overflow-y-auto space-y-2 min-h-0">
+                        <div class="text-center text-slate-400 text-sm py-3">等待偵測...</div>
+                    </div>
+                </div>
+
+                <!-- รายละเอียดการเข้าห้อง -->
+                <div class="glass-card rounded-3xl p-5 shadow-xl border border-white flex-1">
+                    <h3 class="font-bold text-base text-slate-800 flex items-center gap-2 mb-3">
+                        <span>📋</span><span>入室資訊</span>
+                    </h3>
+                    <div class="space-y-2.5">
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-100">
+                            <span class="text-sm text-slate-500">員工編號</span>
+                            <span id="info-employee-id" class="text-sm font-bold text-slate-700">-</span>
+                        </div>
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-100">
+                            <span class="text-sm text-slate-500">職位</span>
+                            <span id="info-role" class="text-sm font-bold text-slate-700">-</span>
+                        </div>
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-100">
+                            <span class="text-sm text-slate-500">授權時段</span>
+                            <span id="info-access-time" class="text-sm font-bold text-slate-700">-</span>
+                        </div>
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-100">
+                            <span class="text-sm text-slate-500">偵測時間</span>
+                            <span id="info-detected-at" class="text-sm font-bold text-slate-700">-</span>
+                        </div>
+                        <div class="flex items-center justify-between py-1.5">
+                            <span class="text-sm text-slate-500">最後偵測</span>
+                            <span id="stat-last" class="text-sm font-bold text-slate-700">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Buttons -->
+                <button class="w-full bg-slate-800 hover:bg-slate-900 text-white font-semibold py-3 px-4 rounded-2xl shadow-md transition flex items-center justify-center gap-2"
+                        onclick="window.location.href='/history'">
+                    <span class="text-lg">📅</span><span>查看人員進出歷史紀錄</span>
+                </button>
+                <button class="w-full bg-blue-700 hover:bg-blue-800 text-white font-semibold py-3 px-4 rounded-2xl shadow-md transition flex items-center justify-center gap-2"
+                        onclick="window.location.href='/personnel'">
+                    <span class="text-lg">👤</span><span>人員管制管理</span>
+                </button>
+
+            </div>
+
         </section>
 
         <!-- 各魚缸感測器數據 (3 缸 × 3 感測器 = 9 卡片) -->
@@ -741,19 +785,89 @@
 
         cameraToggle.addEventListener('change', () => {
             if (cameraToggle.checked) {
-                liveFeed.style.display = 'block';
-                cameraOffMsg.style.display = 'none';
-                cameraBadge.style.display = 'block';
+                liveFeed.classList.remove('hidden');
+                cameraOffMsg.classList.add('hidden');
+                cameraBadge.classList.add('animate-pulse');
                 cameraStatusText.innerText = '開啟';
                 cameraStatusText.classList.remove('text-slate-400');
             } else {
-                liveFeed.style.display = 'none';
-                cameraOffMsg.style.display = 'flex';
-                cameraBadge.style.display = 'none';
+                liveFeed.classList.add('hidden');
+                cameraOffMsg.classList.remove('hidden');
+                cameraBadge.classList.remove('animate-pulse');
                 cameraStatusText.innerText = '關閉';
                 cameraStatusText.classList.add('text-slate-400');
             }
         });
+
+        // --- 最新偵測成員 ---
+        const STATUS_STYLE = {
+            authorized:   { cls: 'bg-green-100 text-green-700',   icon: '✅', label: '已授權' },
+            unauthorized: { cls: 'bg-red-100 text-red-700',       icon: '🚫', label: '未授權' },
+            unknown:      { cls: 'bg-amber-100 text-amber-700',   icon: '⚠️', label: '未知' },
+        };
+
+        async function fetchLatestFace() {
+            try {
+                const res = await fetch('/api/face/latest');
+                if (!res.ok) return;
+                const d = await res.json();
+                const people = d.people || [];
+
+                // Capture image
+                const img = document.getElementById('latest-capture-img');
+                const ph  = document.getElementById('latest-capture-placeholder');
+                if (d.capture_url) {
+                    img.src = d.capture_url + '?t=' + Date.now();
+                    img.classList.remove('hidden');
+                    ph.classList.add('hidden');
+                }
+
+                // Count badge
+                const countBadge = document.getElementById('latest-count-badge');
+                if (people.length > 0) {
+                    countBadge.innerText = `${people.length} 人`;
+                    countBadge.classList.remove('hidden');
+                } else {
+                    countBadge.classList.add('hidden');
+                }
+
+                // Person list
+                const list = document.getElementById('latest-persons-list');
+                if (people.length === 0) {
+                    list.innerHTML = '<div class="text-center text-slate-400 text-sm py-3">等待偵測...</div>';
+                } else {
+                    list.innerHTML = people.map(p => {
+                        const s = STATUS_STYLE[p.status] || STATUS_STYLE.unknown;
+                        const pct = p.confidence ? Math.round(p.confidence * 100) + '%' : '';
+                        return `<div class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/70 border border-slate-100 shadow-sm">
+                            <span class="text-xl">${s.icon}</span>
+                            <div class="flex-1 min-w-0">
+                                <div class="font-bold text-slate-800 text-sm truncate">${p.name || '未知人員'}</div>
+                                ${pct ? `<div class="text-xs text-slate-400">信心度 ${pct}</div>` : ''}
+                            </div>
+                            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${s.cls} whitespace-nowrap">${s.label}</span>
+                        </div>`;
+                    }).join('');
+                }
+
+                // 入室資訊: pick best known person (authorized > unauthorized > unknown)
+                const priority = ['authorized','unauthorized','unknown'];
+                const best = priority.reduce((found, st) =>
+                    found || people.find(p => p.status === st && p.name), null)
+                    || people[0];
+
+                if (best) {
+                    document.getElementById('info-employee-id').innerText = best.employee_id || '-';
+                    document.getElementById('info-role').innerText        = best.role        || '-';
+                    document.getElementById('info-access-time').innerText =
+                        (best.access_start && best.access_end && best.access_start !== '-')
+                        ? `${best.access_start} – ${best.access_end}` : '-';
+                    document.getElementById('info-detected-at').innerText = best.detected_at || '-';
+                }
+            } catch(e) { }
+        }
+
+        setTimeout(() => { fetchLatestFace(); setInterval(fetchLatestFace, 4000); }, 3000);
 
         // --- 標準範圍管理 ---
         const DEFAULT_RANGES = { ph: [6.5, 7.5], temp: [22, 27], do: [6.0, 8.0] };
@@ -1042,8 +1156,6 @@
                 const res = await fetch('/api/detection-stats');
                 if (!res.ok) return;
                 const data = await res.json();
-                document.getElementById('stat-current').innerText = data.current_people ?? 0;
-                document.getElementById('stat-daily').innerText = data.daily_total ?? 0;
                 document.getElementById('stat-last').innerText = data.last_detection ?? '-';
             } catch (e) { }
         }

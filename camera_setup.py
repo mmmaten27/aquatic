@@ -12,16 +12,17 @@ Role mapping (edit CAMERA_CONFIG after running STEP 1):
 """
 
 import cv2
+import os
 import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ─── CONFIGURATION  (edit after running STEP 1) ────────────────
-YOLO_IDX     = 2          # physical camera index for YOLO
+YOLO_IDX     = 0          # physical camera index for YOLO
 SURV_IDX_MAP = {          # logical display ID → physical camera index
-    1: 3,                 # 攝影機 1  →  camera index 3
-    2: 0,                 # 攝影機 2  →  camera index 0
-    3: 1,                 # 攝影機 3  →  camera index 1
+    1: 1,                 # 攝影機 1  →  camera index 3
+    2: 2,                 # 攝影機 2  →  camera index 0
+    3: 3,                 # 攝影機 3  →  camera index 1
 }
 # ───────────────────────────────────────────────────────────────
 
@@ -190,8 +191,21 @@ def main():
         for lid, pidx in sorted(SURV_IDX_MAP.items()):
             print(f"  攝影機 {lid}     = index {pidx} → /video_feed/{lid}")
         print()
-        print("  ✅ ถ้าภาพถูกต้องทุกตัว → รัน python app.py ได้เลย")
-        print("  ❌ ถ้าต้องเปลี่ยน → แก้ CAMERA_CONFIG ในไฟล์นี้ และ app.py")
+        save_ans = input("  บันทึก calibration จาก config นี้? (y/N): ").strip().lower()
+        if save_ans == 'y':
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'detection'))
+            from camera_utils import save_calibration
+            role_map = {
+                'yolo': YOLO_IDX,
+                'cam1': SURV_IDX_MAP.get(1),
+                'cam2': SURV_IDX_MAP.get(2),
+                'cam3': SURV_IDX_MAP.get(3),
+            }
+            save_calibration({k: v for k, v in role_map.items() if v is not None})
+            print("  ✅ บันทึก calibration แล้ว → รัน python app.py ได้เลย")
+        else:
+            print("  ✅ ถ้าภาพถูกต้องทุกตัว → รัน python app.py ได้เลย")
+        print("  ❌ ถ้าต้องเปลี่ยน → แก้ CAMERA_CONFIG ในไฟล์นี้ แล้วรัน STEP 2 ใหม่")
         print("=" * 56)
     else:
         cv2.destroyAllWindows()

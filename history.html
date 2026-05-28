@@ -1,383 +1,317 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="favicon.ico" type="image/x-icon">
-    <title>人員進出紀錄 - AQUATIC</title>
+    <link rel="icon" href="favicon.ico?v=2" type="image/x-icon">
+    <title>偵測歷史紀錄 - 智慧物聯實驗室</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap');
-
-        body { font-family: 'Noto Sans TC', sans-serif; background: linear-gradient(160deg, #cffafe 0%, #e0f2fe 55%, #dcfce7 100%); overflow-x: hidden; margin: 0; }
-
-        .ocean { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; overflow: hidden; }
-        .fish-shadow { position: absolute; fill: rgba(14,116,144,0.13); animation: swim-forward linear infinite; }
-        .leaf-float  { position: absolute; animation: float-around ease-in-out infinite; transform-origin: center; }
-
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background: linear-gradient(160deg, #cffafe 0%, #e0f2fe 55%, #dcfce7 100%);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .ocean { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; overflow:hidden; }
+        .fish-shadow { position:absolute; fill:rgba(14,116,144,0.10); animation:swim-forward linear infinite; }
+        .leaf-float  { position:absolute; animation:float-around ease-in-out infinite; transform-origin:center; }
         @keyframes swim-forward {
-            0%   { transform: translateX(110vw) translateY(0px);   }
-            25%  { transform: translateX(75vw)  translateY(-18px); }
-            50%  { transform: translateX(45vw)  translateY(12px);  }
-            75%  { transform: translateX(15vw)  translateY(-10px); }
-            100% { transform: translateX(-20vw) translateY(0px);   }
+            0%   { transform: translateX(110vw) translateY(0px); }
+            50%  { transform: translateX(45vw)  translateY(14px); }
+            100% { transform: translateX(-20vw) translateY(0px); }
         }
         @keyframes float-around {
-            0%, 100% { transform: translateY(0px)   rotate(0deg);  }
-            25%       { transform: translateY(-22px) rotate(8deg);  }
-            50%       { transform: translateY(-38px) rotate(-4deg); }
-            75%       { transform: translateY(-18px) rotate(10deg); }
+            0%,100% { transform: translateY(0px)  rotate(0deg); }
+            50%     { transform: translateY(-32px) rotate(-5deg); }
         }
-
-        .glass-card   { background: rgba(255,255,255,0.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.55); border-radius: 1.5rem; box-shadow: 0 8px 32px rgba(14,116,144,0.08); }
-        .glass-header { background: rgba(255,255,255,0.92); backdrop-filter: blur(15px); border-bottom: 1px solid rgba(255,255,255,0.4); }
-
-        #modal { transition: opacity 0.2s; }
-        #modal.hidden { opacity: 0; pointer-events: none; }
-        #modal:not(.hidden) { opacity: 1; }
-
-        .detection-card { transition: transform 0.2s, box-shadow 0.2s; }
-        .detection-card:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
+        .glass-card {
+            background: rgba(255,255,255,0.82);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,0.55);
+            border-radius: 1.5rem;
+            box-shadow: 0 8px 32px rgba(14,116,144,0.08);
+        }
+        .glass-header {
+            background: rgba(255,255,255,0.90);
+            backdrop-filter: blur(15px);
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+        }
+        .fade-in { animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+        .btn-page {
+            min-width:2rem; height:2rem; border-radius:0.5rem;
+            display:inline-flex; align-items:center; justify-content:center;
+            font-size:0.8rem; transition:all 0.15s; cursor:pointer;
+        }
+        .btn-page:hover:not(:disabled) { background:rgba(8,145,178,0.15); }
+        .btn-page.active { background:#0891b2; color:#fff; }
+        .btn-page:disabled { opacity:0.35; cursor:not-allowed; }
+        tr.still-inside td:first-child { border-left:3px solid #06b6d4; }
     </style>
 </head>
+<body class="min-h-screen">
 
-<body>
+<!-- Background -->
+<div class="ocean" aria-hidden="true">
+    <svg class="fish-shadow" style="width:90px;top:18%;animation-duration:28s;animation-delay:-5s" viewBox="0 0 100 50"><ellipse cx="55" cy="25" rx="35" ry="14"/><polygon points="10,25 25,10 25,40"/></svg>
+    <svg class="fish-shadow" style="width:55px;top:62%;animation-duration:22s;animation-delay:-13s" viewBox="0 0 100 50"><ellipse cx="55" cy="25" rx="35" ry="14"/><polygon points="10,25 25,10 25,40"/></svg>
+    <svg class="leaf-float" style="width:36px;top:22%;left:8%;animation-duration:9s;animation-delay:-3s;fill:rgba(22,163,74,0.18)" viewBox="0 0 60 80"><ellipse cx="30" cy="55" rx="22" ry="30" transform="rotate(-20 30 55)"/></svg>
+    <svg class="leaf-float" style="width:28px;top:70%;left:88%;animation-duration:12s;animation-delay:-7s;fill:rgba(22,163,74,0.14)" viewBox="0 0 60 80"><ellipse cx="30" cy="55" rx="22" ry="30" transform="rotate(15 30 55)"/></svg>
+</div>
 
-    <div class="ocean">
-        <svg class="fish-shadow" style="top:8%;width:175px;animation-duration:46s;animation-delay:0s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
-        <svg class="fish-shadow" style="top:32%;width:245px;animation-duration:62s;animation-delay:-18s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
-        <svg class="fish-shadow" style="top:58%;width:138px;animation-duration:41s;animation-delay:-30s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
-        <svg class="fish-shadow" style="top:78%;width:198px;animation-duration:54s;animation-delay:-8s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
-        <svg class="fish-shadow" style="top:20%;width:155px;animation-duration:50s;animation-delay:-24s;" viewBox="0 0 550 290"><path d="M42,145 C68,100 130,74 175,72 C202,71 208,47 232,32 C250,18 270,16 286,28 C302,40 306,62 330,72 C358,82 378,108 398,122 L510,40 L458,145 L510,250 L398,168 C372,182 345,204 308,220 C268,238 215,248 175,242 C136,236 80,208 42,145 Z"/></svg>
-        <svg class="leaf-float" style="top:5%;left:8%;width:42px;animation-duration:11s;fill:rgba(16,185,129,0.22);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
-        <svg class="leaf-float" style="top:18%;left:78%;width:56px;animation-duration:14s;animation-delay:-4s;fill:rgba(6,182,212,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
-        <svg class="leaf-float" style="top:30%;left:18%;width:36px;animation-duration:13s;animation-delay:-7s;fill:rgba(52,211,153,0.20);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
-        <svg class="leaf-float" style="top:44%;left:88%;width:48px;animation-duration:15s;animation-delay:-2s;fill:rgba(20,184,166,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
-        <svg class="leaf-float" style="top:60%;left:12%;width:52px;animation-duration:12s;animation-delay:-9s;fill:rgba(16,185,129,0.20);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
-        <svg class="leaf-float" style="top:72%;left:62%;width:38px;animation-duration:16s;animation-delay:-5s;fill:rgba(6,182,212,0.18);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
-        <svg class="leaf-float" style="top:82%;left:32%;width:44px;animation-duration:11s;animation-delay:-11s;fill:rgba(52,211,153,0.18);" viewBox="0 0 300 500"><path d="M150,490 C90,450 30,370 25,270 C20,170 75,50 150,15 C225,50 280,170 275,270 C270,370 210,450 150,490 Z"/></svg>
-        <svg class="leaf-float" style="top:50%;left:40%;width:34px;animation-duration:12s;animation-delay:-8s;fill:rgba(6,182,212,0.16);" viewBox="0 0 512 512"><path d="M256 20 C 356 20, 490 140, 490 256 C 490 372, 356 492, 256 492 C 156 492, 22 372, 22 256 C 22 140, 156 20, 256 20 Z"/></svg>
+<!-- Header -->
+<header class="glass-header sticky top-0 z-40 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <a href="/" class="text-slate-500 hover:text-cyan-600 transition-colors text-sm flex items-center gap-1">
+                <i class="fas fa-arrow-left"></i> 返回
+            </a>
+            <div class="w-px h-5 bg-slate-200"></div>
+            <span class="text-slate-400 text-sm">🔬 智慧物聯實驗室</span>
+            <div class="w-px h-5 bg-slate-200"></div>
+            <h1 class="text-slate-700 font-semibold text-base flex items-center gap-2">
+                <i class="fas fa-history text-cyan-500"></i> 偵測歷史紀錄
+            </h1>
+        </div>
+        <div class="flex items-center gap-2 text-sm bg-cyan-50 border border-cyan-100 rounded-full px-3 py-1">
+            <span class="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+            <span class="text-cyan-700 font-medium" id="room-count">— 人在室內</span>
+        </div>
     </div>
+</header>
 
-    <!-- 頁首 -->
-    <header class="glass-header sticky top-0 z-50 px-6 py-4 shadow-sm">
-        <div class="max-w-7xl mx-auto flex items-center justify-between gap-2">
-            <div class="flex items-center space-x-2 sm:space-x-4">
-                <button onclick="window.location.href='/'"
-                    class="flex items-center gap-1 bg-white/80 hover:bg-white px-3 py-2 rounded-xl shadow-sm border border-slate-200 text-slate-700 font-semibold transition text-sm whitespace-nowrap">
-                    ← 返回
-                </button>
-                <div class="w-9 h-9 sm:w-10 sm:h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-md flex-shrink-0">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M2 12c5-5 15-5 20 0-5 5-15 5-20 0z"/>
-                        <path d="M12 2v10M17 7l-5 5"/>
-                    </svg>
-                </div>
-                <div class="min-w-0">
-                    <h1 class="text-base sm:text-xl font-bold text-slate-800 leading-tight">AQUATIC</h1>
-                    <div class="text-xs font-medium text-slate-500">人員進出紀錄</div>
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-4">
+
+    <!-- Filter bar -->
+    <div class="glass-card p-4 fade-in">
+        <div class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-[160px]">
+                <label class="block text-xs text-slate-500 mb-1">搜尋姓名</label>
+                <div class="relative">
+                    <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                    <input id="filter-search" type="text" placeholder="成員姓名..."
+                        class="w-full pl-8 pr-3 py-2 text-sm rounded-xl bg-white/70 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-100 text-slate-700">
                 </div>
             </div>
-
-            <div class="text-right hidden sm:block">
-                <div id="clock-date" class="text-xs text-slate-500 font-medium"></div>
-                <div id="clock-time" class="text-lg font-bold text-slate-800"></div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">開始日期</label>
+                <input id="filter-from" type="date"
+                    class="px-3 py-2 text-sm rounded-xl bg-white/70 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-100 text-slate-700">
             </div>
-        </div>
-    </header>
-
-    <main class="max-w-7xl mx-auto p-6 space-y-6 mt-4">
-
-        <!-- 統計卡片 -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div class="glass-card rounded-2xl p-5 shadow-lg text-center border border-white/50">
-                <div class="text-3xl mb-1">📅</div>
-                <div class="text-3xl font-black text-blue-600" id="stat-today">-</div>
-                <div class="text-xs text-slate-500 font-medium mt-1">今日偵測次數</div>
+            <div>
+                <label class="block text-xs text-slate-500 mb-1">結束日期</label>
+                <input id="filter-to" type="date"
+                    class="px-3 py-2 text-sm rounded-xl bg-white/70 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-100 text-slate-700">
             </div>
-            <div class="glass-card rounded-2xl p-5 shadow-lg text-center border border-white/50">
-                <div class="text-3xl mb-1">📊</div>
-                <div class="text-3xl font-black text-green-600" id="stat-total">-</div>
-                <div class="text-xs text-slate-500 font-medium mt-1">總計次數</div>
-            </div>
-            <div class="glass-card rounded-2xl p-5 shadow-lg text-center border border-white/50 col-span-2">
-                <div class="text-xs text-slate-500 font-medium mb-2">最新紀錄時間</div>
-                <div class="text-sm font-semibold text-slate-700" id="stat-latest">-</div>
-            </div>
-        </div>
-
-        <!-- 偵測紀錄列表 -->
-        <div>
-            <h2 class="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
-                🎥 <span>偵測歷史紀錄</span>
-                <span id="loading-badge" class="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-normal animate-pulse">載入中...</span>
-            </h2>
-
-            <div id="grouped-container" class="space-y-6"></div>
-
-            <div id="empty-msg" class="hidden glass-card rounded-3xl p-12 text-center shadow-lg mt-4">
-                <div class="text-5xl mb-4">📭</div>
-                <div class="text-lg font-semibold text-slate-600">尚無偵測紀錄</div>
-                <div class="text-sm text-slate-400 mt-1">系統偵測到人員時將自動記錄</div>
-            </div>
-
-            <div class="text-center mt-8">
-                <button id="load-more-btn"
-                    class="hidden bg-slate-800 hover:bg-slate-900 text-white font-semibold py-3 px-8 rounded-xl shadow-md transition"
-                    onclick="loadMore()">
-                    載入更多
-                </button>
-                <div id="all-loaded-msg" class="hidden text-sm text-slate-400 font-medium">
-                    已顯示全部紀錄
-                </div>
-            </div>
-        </div>
-
-    </main>
-
-    <!-- 圖片放大 Modal -->
-    <div id="modal" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
-        onclick="closeModal()">
-        <div class="relative max-w-4xl w-full" onclick="event.stopPropagation()">
-            <button onclick="closeModal()"
-                class="absolute -top-10 right-0 text-white text-3xl font-bold hover:text-red-400 transition">✕</button>
-            <img id="modal-img" src="" alt="偵測影像"
-                class="w-full rounded-2xl shadow-2xl object-contain max-h-[80vh]">
-            <div class="mt-3 text-center">
-                <div class="text-white font-semibold text-lg" id="modal-time"></div>
-                <div class="text-white/70 text-sm" id="modal-count"></div>
-            </div>
+            <button onclick="loadHistory(1)"
+                class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium rounded-xl transition-colors flex items-center gap-2">
+                <i class="fas fa-filter"></i> 篩選
+            </button>
+            <button onclick="clearFilters()"
+                class="px-4 py-2 bg-white/70 hover:bg-white border border-slate-200 text-slate-600 text-sm rounded-xl transition-colors">
+                清除
+            </button>
         </div>
     </div>
 
-    <script>
-        // --- 時鐘 ---
-        function updateClock() {
-            const now = new Date();
-            document.getElementById('clock-date').innerText = now.toLocaleDateString('zh-TW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-            document.getElementById('clock-time').innerText = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    <!-- Table -->
+    <div class="glass-card overflow-hidden fade-in">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100/80">
+            <span class="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                <i class="fas fa-door-open text-cyan-500"></i> 出入紀錄
+            </span>
+            <span id="total-label" class="text-xs text-slate-400"></span>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-slate-50/60 text-slate-500 text-xs uppercase tracking-wide">
+                        <th class="px-4 py-3 text-left font-medium">成員姓名</th>
+                        <th class="px-4 py-3 text-left font-medium">進入時間</th>
+                        <th class="px-4 py-3 text-center font-medium">進入攝影機</th>
+                        <th class="px-4 py-3 text-left font-medium">離開時間</th>
+                        <th class="px-4 py-3 text-center font-medium">離開攝影機</th>
+                        <th class="px-4 py-3 text-center font-medium">停留時間</th>
+                        <th class="px-4 py-3 text-center font-medium">狀態</th>
+                    </tr>
+                </thead>
+                <tbody id="history-tbody">
+                    <tr><td colspan="7" class="text-center py-12 text-slate-400">
+                        <i class="fas fa-spinner fa-spin mr-2"></i>載入中…
+                    </td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex items-center justify-between px-5 py-3 border-t border-slate-100/80">
+            <span id="page-info" class="text-xs text-slate-400"></span>
+            <div id="page-buttons" class="flex items-center gap-1"></div>
+        </div>
+    </div>
+
+</main>
+
+<script>
+    let currentPage = 1;
+    let totalPages  = 1;
+
+    function formatDuration(minutes) {
+        if (minutes === null || minutes === undefined) return '—';
+        if (minutes < 1)  return '< 1 分鐘';
+        if (minutes < 60) return `${minutes} 分鐘`;
+        const h = Math.floor(minutes / 60), m = minutes % 60;
+        return m > 0 ? `${h} 小時 ${m} 分鐘` : `${h} 小時`;
+    }
+
+    function camLabel(id) {
+        return {1:'攝影機 2', 2:'攝影機 3', 3:'攝影機 4'}[id] ?? `cam${id}`;
+    }
+
+    function initials(name) {
+        if (!name) return '?';
+        const p = name.trim().split(/\s+/);
+        return p.length >= 2 ? (p[0][0] + p[p.length-1][0]).toUpperCase() : name.slice(0,2).toUpperCase();
+    }
+
+    async function loadHistory(page = 1) {
+        currentPage = page;
+        const search   = document.getElementById('filter-search').value.trim();
+        const dateFrom = document.getElementById('filter-from').value;
+        const dateTo   = document.getElementById('filter-to').value;
+
+        const params = new URLSearchParams({ page });
+        if (search)   params.append('search',    search);
+        if (dateFrom) params.append('date_from', dateFrom);
+        if (dateTo)   params.append('date_to',   dateTo);
+
+        const tbody = document.getElementById('history-tbody');
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-slate-400">
+            <i class="fas fa-spinner fa-spin mr-2"></i>載入中…</td></tr>`;
+
+        try {
+            const res  = await fetch(`/api/room/history?${params}`);
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+
+            totalPages = data.total_pages;
+            document.getElementById('total-label').textContent =
+                `共 ${data.total.toLocaleString()} 筆資料`;
+
+            renderTable(data.records);
+            renderPagination(data.page, data.total_pages, data.total, data.per_page);
+        } catch (e) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-red-400">
+                <i class="fas fa-exclamation-circle mr-2"></i>${e.message}</td></tr>`;
         }
-        setInterval(updateClock, 1000);
-        updateClock();
+    }
 
-        // --- 狀態 ---
-        let currentPage = 1;
-        let totalRecords = 0;
-        let allItems = [];
-        const LIMIT = 24;
-
-        // --- 時段設定 ---
-        const PERIODS = [
-            { key: 3, label: '🌙 凌晨', range: '00:00 – 06:00', color: 'bg-indigo-50 border-indigo-100 text-indigo-700' },
-            { key: 2, label: '🌅 上午', range: '06:00 – 12:00', color: 'bg-amber-50 border-amber-100 text-amber-700' },
-            { key: 1, label: '☀️ 下午', range: '12:00 – 18:00', color: 'bg-sky-50 border-sky-100 text-sky-700' },
-            { key: 0, label: '🌆 晚上', range: '18:00 – 24:00', color: 'bg-violet-50 border-violet-100 text-violet-700' },
-        ];
-
-        function getPeriodIndex(ts) {
-            const h = new Date(ts).getHours();
-            if (h < 6)  return 3; // 凌晨
-            if (h < 12) return 2; // 上午
-            if (h < 18) return 1; // 下午
-            return 0;             // 晚上
+    function renderTable(records) {
+        const tbody = document.getElementById('history-tbody');
+        if (!records.length) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-slate-400">
+                <i class="fas fa-inbox mr-2 text-lg"></i><br>查無資料</td></tr>`;
+            return;
         }
+        tbody.innerHTML = records.map(r => {
+            const inside = !r.exited_at;
+            const statusBadge = inside
+                ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
+                       <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>仍在室內
+                   </span>`
+                : `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                       <span class="w-1.5 h-1.5 bg-slate-400 rounded-full"></span>已離開
+                   </span>`;
+            const exitTime = r.exited_at
+                ? `<span class="text-slate-700">${r.exited_at}</span>`
+                : `<span class="text-slate-400 italic">—</span>`;
+            const exitCam = r.exit_cam
+                ? `<span class="text-xs bg-sky-50 text-sky-600 border border-sky-100 rounded-lg px-2 py-0.5">${camLabel(r.exit_cam)}</span>`
+                : `<span class="text-slate-300">—</span>`;
 
-        function formatTime(ts) {
-            const d = new Date(ts);
-            return d.toLocaleDateString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' })
-                 + ' ' + d.toLocaleTimeString('zh-TW');
-        }
-
-        function formatTimeOnly(ts) {
-            return new Date(ts).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        }
-
-        function formatDateHeader(ts) {
-            const d   = new Date(ts);
-            const now = new Date();
-            const yest = new Date(now); yest.setDate(now.getDate() - 1);
-
-            const label = d.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
-
-            let badge = '';
-            if (d.toDateString() === now.toDateString())
-                badge = '<span class="text-xs bg-blue-500 text-white px-2.5 py-0.5 rounded-full font-semibold ml-2">今天</span>';
-            else if (d.toDateString() === yest.toDateString())
-                badge = '<span class="text-xs bg-slate-400 text-white px-2.5 py-0.5 rounded-full font-semibold ml-2">昨天</span>';
-
-            return label + badge;
-        }
-
-        // --- 渲染偵測卡片 ---
-        function renderCard(item) {
-            const hasImage = item.image_filename;
-            const imgSrc   = hasImage ? `/detection-image/${item.image_filename}` : null;
-            const fullTime = formatTime(item.timestamp);
-            const timeOnly = formatTimeOnly(item.timestamp);
-
-            return `
-                <div class="glass-card detection-card rounded-3xl overflow-hidden shadow-lg border border-white/60 cursor-pointer"
-                    onclick="${hasImage ? `openModal('${imgSrc}', '${fullTime}', ${item.person_count})` : ''}">
-                    <div class="relative bg-slate-800 aspect-video flex items-center justify-center overflow-hidden">
-                        ${hasImage
-                            ? `<img src="${imgSrc}" alt="偵測影像" class="w-full h-full object-cover"
-                                onerror="this.parentElement.innerHTML='<div class=\\'text-slate-400 text-sm flex flex-col items-center gap-2\\'><span class=\\'text-3xl\\'>🖼️</span>找不到圖片</div>'">`
-                            : `<div class="text-slate-400 text-sm flex flex-col items-center gap-2"><span class="text-3xl">📷</span>無圖片</div>`
-                        }
-                        <div class="absolute top-3 left-3 bg-red-500 text-white text-xs font-bold px-2 py-1 rounded-lg flex items-center gap-1">
-                            <span class="w-1.5 h-1.5 bg-white rounded-full inline-block animate-pulse"></span>
-                            已偵測
-                        </div>
+            return `<tr class="border-t border-slate-100 hover:bg-cyan-50/40 transition-colors ${inside ? 'still-inside' : ''}">
+                <td class="px-4 py-3">
+                    <div class="flex items-center gap-2">
+                        <div class="w-7 h-7 rounded-full bg-cyan-100 text-cyan-700 flex items-center justify-center text-xs font-bold shrink-0">${initials(r.person_name)}</div>
+                        <span class="font-medium text-slate-700">${r.person_name ?? '—'}</span>
                     </div>
-                    <div class="p-3 space-y-1.5">
-                        <div class="flex items-center justify-between">
-                            <span class="text-sm font-bold text-slate-800">👤 ${item.person_count} 人</span>
-                            <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">#${item.id}</span>
-                        </div>
-                        <div class="text-xs text-slate-500">🕐 ${timeOnly}</div>
-                    </div>
-                </div>
-            `;
-        }
+                </td>
+                <td class="px-4 py-3 text-slate-700 whitespace-nowrap">${r.entered_at}</td>
+                <td class="px-4 py-3 text-center">
+                    <span class="text-xs bg-cyan-50 text-cyan-600 border border-cyan-100 rounded-lg px-2 py-0.5">${camLabel(r.entry_cam)}</span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">${exitTime}</td>
+                <td class="px-4 py-3 text-center">${exitCam}</td>
+                <td class="px-4 py-3 text-center text-slate-600 font-medium">${formatDuration(r.duration_min)}</td>
+                <td class="px-4 py-3 text-center">${statusBadge}</td>
+            </tr>`;
+        }).join('');
+    }
 
-        // --- 渲染分群檢視 ---
-        function renderGrouped() {
-            const container = document.getElementById('grouped-container');
+    function renderPagination(page, total_pages, total, per_page) {
+        const start = Math.min((page - 1) * per_page + 1, total);
+        const end   = Math.min(page * per_page, total);
+        document.getElementById('page-info').textContent =
+            total > 0 ? `顯示 ${start}–${end}，共 ${total.toLocaleString()} 筆` : '';
 
-            if (allItems.length === 0) {
-                document.getElementById('empty-msg').classList.remove('hidden');
-                container.innerHTML = '';
-                return;
+        const btns = document.getElementById('page-buttons');
+        btns.innerHTML = '';
+
+        const addBtn = (html, pg, disabled = false, active = false) => {
+            const b = document.createElement('button');
+            b.className = `btn-page text-slate-600 ${active ? 'active' : ''}`;
+            b.innerHTML = html;
+            b.disabled  = disabled;
+            if (!disabled) b.onclick = () => loadHistory(pg);
+            btns.appendChild(b);
+        };
+
+        addBtn('<i class="fas fa-chevron-left text-xs"></i>', page - 1, page <= 1);
+
+        let pages = new Set([1, total_pages]);
+        for (let p = Math.max(1, page - 2); p <= Math.min(total_pages, page + 2); p++) pages.add(p);
+        let sorted = [...pages].sort((a, b) => a - b), prev = 0;
+        sorted.forEach(p => {
+            if (p - prev > 1) {
+                const dot = document.createElement('span');
+                dot.className = 'text-slate-400 text-xs px-1';
+                dot.textContent = '…';
+                btns.appendChild(dot);
             }
-            document.getElementById('empty-msg').classList.add('hidden');
+            addBtn(p, p, false, p === page);
+            prev = p;
+        });
 
-            // 依日期分組
-            const byDate = {};
-            allItems.forEach(item => {
-                const d = new Date(item.timestamp);
-                const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-                if (!byDate[key]) byDate[key] = { ts: item.timestamp, buckets: { 0:[], 1:[], 2:[], 3:[] } };
-                byDate[key].buckets[getPeriodIndex(item.timestamp)].push(item);
-            });
+        addBtn('<i class="fas fa-chevron-right text-xs"></i>', page + 1, page >= total_pages);
+    }
 
-            // 依日期降序排列
-            const sortedDates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+    async function loadRoomStatus() {
+        try {
+            const res  = await fetch('/api/room/status');
+            const data = await res.json();
+            document.getElementById('room-count').textContent = `${data.count} 人在室內`;
+        } catch (_) {}
+    }
 
-            let html = '';
-            sortedDates.forEach(dateKey => {
-                const { ts, buckets } = byDate[dateKey];
-                const totalDay = Object.values(buckets).reduce((s, arr) => s + arr.length, 0);
+    function clearFilters() {
+        document.getElementById('filter-search').value = '';
+        document.getElementById('filter-from').value   = '';
+        document.getElementById('filter-to').value     = '';
+        loadHistory(1);
+    }
 
-                html += `
-                <div class="glass-card rounded-3xl p-5 shadow-lg border border-white/60">
-                    <!-- 日期標題 -->
-                    <div class="flex items-center gap-3 mb-5">
-                        <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center text-white shadow-md flex-shrink-0">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                                <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
-                            </svg>
-                        </div>
-                        <div class="flex-1">
-                            <div class="flex items-center flex-wrap gap-1">
-                                <span class="text-base font-black text-slate-800">${formatDateHeader(ts)}</span>
-                            </div>
-                            <div class="text-xs text-slate-400 mt-0.5">共 ${totalDay} 筆偵測紀錄</div>
-                        </div>
-                    </div>
+    document.getElementById('filter-search').addEventListener('keydown', e => {
+        if (e.key === 'Enter') loadHistory(1);
+    });
 
-                    <!-- 各時段 (晚上→下午→上午→凌晨，由新到舊) -->
-                    <div class="space-y-5">
-                `;
-
-                // 依時段順序：晚上(0)→下午(1)→上午(2)→凌晨(3) (數字小=越晚)
-                PERIODS.forEach(period => {
-                    const items = buckets[period.key];
-                    if (items.length === 0) return;
-
-                    html += `
-                        <div>
-                            <div class="flex items-center gap-2 mb-3">
-                                <span class="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1 rounded-xl border ${period.color}">
-                                    ${period.label}
-                                    <span class="text-xs font-normal opacity-70">${period.range}</span>
-                                </span>
-                                <span class="text-xs text-slate-400 font-medium">${items.length} 筆</span>
-                                <div class="flex-1 h-px bg-slate-100"></div>
-                            </div>
-                            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                                ${items.map(renderCard).join('')}
-                            </div>
-                        </div>
-                    `;
-                });
-
-                html += `</div></div>`;
-            });
-
-            container.innerHTML = html;
-        }
-
-        // --- 載入偵測歷史 ---
-        async function loadHistory(page = 1, append = false) {
-            try {
-                const res = await fetch(`/api/detection-history?page=${page}&limit=${LIMIT}`);
-                if (!res.ok) throw new Error('API error');
-                const data = await res.json();
-
-                totalRecords = data.total;
-                document.getElementById('stat-today').innerText = data.today ?? 0;
-                document.getElementById('stat-total').innerText = data.total ?? 0;
-
-                if (data.data && data.data.length > 0) {
-                    document.getElementById('stat-latest').innerText = formatTime(data.data[0].timestamp);
-                }
-
-                if (!append) allItems = [];
-                allItems = allItems.concat(data.data);
-                renderGrouped();
-
-                const loaded = allItems.length;
-                if (loaded < totalRecords) {
-                    document.getElementById('load-more-btn').classList.remove('hidden');
-                    document.getElementById('all-loaded-msg').classList.add('hidden');
-                } else {
-                    document.getElementById('load-more-btn').classList.add('hidden');
-                    if (totalRecords > 0) document.getElementById('all-loaded-msg').classList.remove('hidden');
-                }
-
-                document.getElementById('loading-badge').classList.add('hidden');
-
-            } catch (e) {
-                console.error('Load history error:', e);
-                document.getElementById('loading-badge').innerText = '載入失敗';
-                document.getElementById('loading-badge').classList.remove('animate-pulse');
-            }
-        }
-
-        function loadMore() {
-            currentPage++;
-            loadHistory(currentPage, true);
-        }
-
-        // --- Modal ---
-        function openModal(imgSrc, timeStr, count) {
-            document.getElementById('modal-img').src         = imgSrc;
-            document.getElementById('modal-time').innerText  = timeStr;
-            document.getElementById('modal-count').innerText = `偵測到 ${count} 人`;
-            document.getElementById('modal').classList.remove('hidden');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeModal() {
-            document.getElementById('modal').classList.add('hidden');
-            document.getElementById('modal-img').src = '';
-            document.body.style.overflow = '';
-        }
-
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-        loadHistory();
-    </script>
+    loadHistory(1);
+    loadRoomStatus();
+    setInterval(loadRoomStatus, 15000);
+</script>
 </body>
 </html>
