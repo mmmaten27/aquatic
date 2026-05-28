@@ -511,31 +511,34 @@ def handle_entry(name, face_folder):
 
 
 def handle_exit_trigger(name, face_folder):
-    """Called when cam3 recognizes a person — starts exit confirmation timer."""
+    """Called when cam3 recognizes a person — loops until cam2 confirms they've left."""
     with pending_exit_lock:
         if face_folder in pending_exit:
-            return  # already counting down
+            return
+        pending_exit[face_folder] = True
 
-    def confirm_exit():
-        now = time.time()
-        with cam_ident_lock:
-            last_seen = cam_identities[2].get(face_folder, 0)
-        if now - last_seen > CAM2_PERSON_TIMEOUT:
-            with room_lock:
-                room_occupants.pop(face_folder, None)
-            threading.Thread(target=log_room_event,
-                             args=("EXIT", name, face_folder, 3), daemon=True).start()
-            print(f"🚪 EXIT confirmed: {name} ({face_folder})")
-        else:
-            print(f"🚪 EXIT cancelled: {name} still in room (cam2 saw them {now - last_seen:.1f}s ago)")
-        with pending_exit_lock:
-            pending_exit.pop(face_folder, None)
+    def confirm_exit_loop():
+        try:
+            start = time.time()
+            while time.time() - start < 30:
+                time.sleep(1)
+                now = time.time()
+                with cam_ident_lock:
+                    last_seen = cam_identities[2].get(face_folder, 0)
+                if now - last_seen > CAM2_PERSON_TIMEOUT:
+                    with room_lock:
+                        room_occupants.pop(face_folder, None)
+                    threading.Thread(target=log_room_event,
+                                     args=("EXIT", name, face_folder, 3), daemon=True).start()
+                    print(f"🚪 EXIT confirmed: {name} ({face_folder})")
+                    return
+            print(f"🚪 EXIT timeout (30s): {name} ({face_folder}) — person may have left unseen")
+        finally:
+            with pending_exit_lock:
+                pending_exit.pop(face_folder, None)
 
-    t = threading.Timer(EXIT_TRIGGER_DELAY, confirm_exit)
-    with pending_exit_lock:
-        pending_exit[face_folder] = t
-    t.start()
-    print(f"🚪 EXIT pending: {name} ({face_folder}), confirming in {EXIT_TRIGGER_DELAY}s")
+    threading.Thread(target=confirm_exit_loop, daemon=True).start()
+    print(f"🚪 EXIT pending: {name} ({face_folder}) — monitoring cam2 for up to 30s")
 
 
 def surv_detect_loop(cam_id):
