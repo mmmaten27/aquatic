@@ -3,7 +3,10 @@
     "allow": [
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\ITM_Student_06\\\\Desktop\\\\PROJECT-2026-main\" -File | Where-Object {$_.Extension -in '.txt','.md','.ini','.env','.cfg'} | Select-Object Name, FullName)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\ITM_Student_06\\\\Desktop\\\\PROJECT-2026-main\" -Name -Recurse | Where-Object {$_ -match '\\(README|readme|\\\\.gitignore|\\\\.gitattributes|requirements\\)' })",
-      "Bash(Remove-Item \"c:\\\\Users\\\\ITM_Student_06\\\\Desktop\\\\PROJECT-2026-main\\\\detection\\\\camera_calibration.json\" -Force)"
+      "Bash(Remove-Item \"c:\\\\Users\\\\ITM_Student_06\\\\Desktop\\\\PROJECT-2026-main\\\\detection\\\\camera_calibration.json\" -Force)",
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }

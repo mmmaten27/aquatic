@@ -1,0 +1,228 @@
+================================================================================
+  FACE-RECOGNITION ACCESS CONTROL — DETECTION SYSTEM OVERVIEW
+================================================================================
+File  : detection/DETECTION_SYSTEM.txt
+Purpose: Give another LLM/developer full context of the detection logic,
+         design decisions, and architecture so they can debug or extend
+         the system without re-reading the entire codebase.
+
+================================================================================
+1.  SYSTEM GOAL
+================================================================================
+A face-recognition access-control system for an aquaponics lab room.
+- When an authorised person walks in, the system logs ENTRY and increments a
+  room-occupancy counter (displayed on a dashboard).
+- When they walk out (cam3 -> cam2), the system logs EXIT and decrements.
+- Unknown persons trigger a Telegram alert after 20 seconds (deferred).
+- The web dashboard shows live camera feeds, who is inside, and entry/exit logs.
+- All UI text and Telegram messages are in Traditional Chinese (繁體中文).
+
+================================================================================
+2.  HARDWARE & CAMERAS
+================================================================================
+- 4 USB cameras (A4Tech, 640x480 each).
+- YOLO camera  : index 0 — placed at the entrance, pointed at the door.
+- Surv camera 1: index 1 — door-side camera, triggers ENTER state.
+- Surv camera 2: index 2 — mid-room camera, confirms identity timestamp.
+- Surv camera 3: index 3 — far-side camera, triggers EXIT pending.
+
+Both YOLO and surv cameras run person detection (YOLOv8n) on every frame, but
+at different rates: YOLO cam at ~15 FPS, surv cams at ~5 FPS with face
+recognition rate-limited to every ~3 seconds.
+
+================================================================================
+3.  CORE COMPONENTS
+================================================================================
+app.py                  — Main Flask app, camera threads, detection loops,
+                          state machine, Telegram alerts, web routes.
+detection/face_utils.py — InsightFace ArcFace wrapper: DB embedding, quality
+                          gates, similarity matching, access-rule check.
+detection/config.py     — Telegram bot token/chat ID, cooldowns, active hours.
+
+================================================================================
+4.  DETECTION PIPELINE (end-to-end)
+================================================================================
+For every camera thread (YOLO + 3 surv cameras):
+
+  Step A — Person Detection
+    YOLO cam uses model.track(persist=True) for built-in cross-frame track IDs.
+    Surv cams use model() + custom IoU matching (see §5).
+    Only detections with confidence >= MIN_CONFIDENCE are kept.
+
+  Step B — Best-Frame Selection
+    Each camera buffers frames that contain people.
+    A score = max_conf * 0.6 + sharpness * 0.4 is computed for each frame
+    (sharpness = Laplacian variance / 300, clamped to [0,1]).
+    Before face recognition, the best-scoring frame from the buffer is used.
+    Buffer size: BEST_FRAME_BUFFER_SIZE (configurable, typically ~10-20).
+
+  Step C — Face Recognition (rate-limited)
+    Surv cameras: max once per SURV_FACE_INTERVAL seconds (~3s).
+    YOLO camera: runs in a dedicated face_recognition_loop.
+    Steps inside recognize_face():
+      1. CLAHE lighting normalisation (L-channel equalisation)
+      2. InsightFace face detection (buffalo_l model, CPU)
+      3. Quality gate: det_score >= 0.50
+      4. Size gate: face width & height >= 50 px
+      5. ArcFace embedding extraction → L2-normalise
+      6. Cosine-distance matching against all DB embeddings
+      7. If best_dist > SIMILARITY_THRESHOLD (0.55) → unknown
+      8. If inter-class margin < 0.05 (2nd best too close) → ambiguous → unknown
+      9. If match found, check access rules (time-based authorised/unauthorised)
+
+  Step D — Track-Buffer Retry (deferred identification)
+    When face recognition fails (unknown) for a track, the face crop is pushed
+    into a per-track buffer.
+    On every subsequent frame, all buffered crops are re-run through ArcFace.
+    This allows identifying a person who initially faced away from the camera
+    but later turned toward it.
+    Buffer sizes: YOLO cam = 8, Surv cam 1 = 12 (backup, needs more buffer),
+                  Surv cam 2 = 6 (door-facing, fast ID), Surv cam 3 = 4 (no face rec).
+
+  Step E — State Machine & Access Control
+    cam1 (door)   → calls _cast_vote() → if vote passes → update_sighting(ENTER)
+    cam2 (middle) → directly updates identity timestamp
+    cam3 (far)    → calls _cast_vote() → if vote passes → EXIT pending
+
+    The voting system requires multiple positive detections before changing room
+    occupancy, reducing false triggers from brief detections.
+
+  Step F — Deferred Unknown Alert
+    When a track is first detected as unknown, track_first_seen[tid] is set.
+    After UNKNOWN_DEFER_SEC (20 seconds), if the track is still unknown, a
+    Telegram notification is sent via update_unknown_sighting().
+    If the person is identified before 20s, the alert is cancelled.
+    Only cam1 (door camera) triggers unknown alerts.
+
+================================================================================
+5.  TRACKING STRATEGY (Key Design Decision)
+================================================================================
+PROBLEM:
+  YOLO's built-in model.track() uses an internal tracker state object.
+  When multiple threads call model.track() concurrently on the same model
+  instance, the tracker state gets corrupted → detection silently fails
+  (zero results returned even though people are present).
+
+SOLUTION:
+  YOLO Cam (index 0) — uses model.track(persist=True).
+    Only ONE thread uses track(). It runs in the main camera loop and a
+    dedicated face_recognition_loop processes the track results.
+    Global buffers: track_crop_buffer, track_identity, track_first_seen, etc.
+
+  Surv Cams (indices 1,2,3) — use model() + custom IoU tracker.
+    Each camera thread calls model() (plain detection, no tracker).
+    A local _match_boxes() function matches current boxes to previous boxes:
+      1. Primary: IoU (threshold 0.15) — catches high-overlap matches
+      2. Fallback: Center distance (limit 20% of frame width) — catches fast
+         walkers where box overlap is low but center moved only slightly
+    Camera 3 (exit) does NOT run face recognition — person detection only.
+    Each camera maintains its OWN tracking dicts:
+      prev_tracks       — [(box_tensor, local_track_id), ...]
+      surv_track_crops  — {local_track_id: [crop_img, ...]}
+      surv_track_ident  — {local_track_id: {name, status, confidence}}
+      surv_track_first_seen — {local_track_id: timestamp}
+    A model_infer_lock prevents concurrent model() calls across threads.
+
+  This design keeps the single YOLO model safe while giving every camera
+  cross-frame tracking capability.
+
+================================================================================
+6.  FACE DATABASE (Embedding Cache)
+================================================================================
+- Face photos are stored in faces_db/<person_name>/photo1.jpg, etc.
+- On startup, _build_db() reads all photos, runs ArcFace, and caches L2-
+  normalised embeddings in memory (_db dict).
+- For each person, both individual photo embeddings AND a mean embedding are
+  stored (mean = more stable reference).
+- The cache can be invalidated via clear_face_cache() (called when photos
+  are uploaded or deleted via the web UI).
+
+================================================================================
+7.  KEY PARAMETERS
+================================================================================
+── face_utils.py ──────────────────────────────────────────────
+SIMILARITY_THRESHOLD  = 0.55   — Cosine distance upper bound (lower = stricter)
+MIN_FACE_QUALITY      = 0.50   — InsightFace det_score minimum
+MIN_FACE_SIZE_PX      = 30     — Hard cutoff: face smaller → reject immediately
+SOFT_SIZE_THRESHOLD   = 50     — Face 30-50px → add penalty to threshold (max +0.08)
+HIGH_CONF_THRESHOLD   = 0.35   — Match distance below this → skip margin check
+MIN_INTERCLASS_MARGIN = 0.08   — Gap between best & 2nd-best (raised from 0.05)
+
+── app.py ─────────────────────────────────────────────────────
+IOU_THRESHOLD         = 0.15   — IoU threshold (lowered from 0.25, catches fast walkers)
+CENTER_DIST_LIMIT     = 0.20   — Center-distance fallback (fraction of frame width)
+SURV_TRACK_BUFFER_SIZES = {1: 12, 2: 6, 3: 4}
+CAM_NO_FACE_RECOGNITION = {3}  — Exit cam skips face rec (sees only legs)
+EXIT_CONFIRM_DELAY_SEC = 8     — Wait before confirming EXIT
+ENTRY_WINDOW_SEC       = 12    — Cross-camera ENTER confirmation window
+
+================================================================================
+8.  PROBLEMS WE HAVE ALREADY SOLVED
+================================================================================
+a) model.track() shared-state crash
+   Symptom: detection returns zero results randomly after ~30-60 mins.
+   Root cause: concurrent model.track() calls corrupt internal tracker state.
+   Fix: surv cams use model() + custom IoU tracker instead.
+
+b) Deferred unknown alert
+   Symptom: alerts fired immediately when a person walked past, even if they
+   would be identified a second later.
+   Fix: 20-second wait with cancellation on identity.
+
+c) Person facing away from camera
+   Symptom: person enters with back to camera, never identified.
+   Fix: multi-frame crop buffer retries recognition on every frame.
+
+d) Low-quality frames
+   Symptom: blurred or dark frames chosen by chance.
+   Fix: best-frame selection (sharpness + confidence scoring).
+
+e) Concurrent model inference
+   Symptom: model.track() and model() running simultaneously on different
+   threads causes undefined behaviour.
+   Fix: model_infer_lock serialises all YOLO inferences.
+
+================================================================================
+9.  KNOWN LIMITATIONS / POTENTIAL ISSUES
+================================================================================
+- MIN_FACE_SIZE_PX = 30 (hard cutoff) with SOFT_SIZE_THRESHOLD = 50 (penalty zone).
+  Faces between 30-50px get a distance penalty of up to +0.08, making it harder
+  but still possible to match. Faces below 30px are rejected entirely.
+
+- SIMILARITY_THRESHOLD = 0.55 was tuned for a small DB (2 persons). If more
+  people are added, false-positive rate may increase. Consider raising or
+  implementing adaptive thresholding.
+
+- IoU threshold 0.15 + center distance fallback handles fast walkers better,
+  but extreme motion blur between frames can still cause track loss.
+
+- CAMERA MAPPING may change if USB ports are rearranged. The current mapping
+  is hardcoded as SURV_CAM_IDX = {1: 1, 2: 2, 3: 3}. On some systems the
+  order depends on USB controller enumeration, not physical port labels.
+
+- _flush_camera(n=20) slows startup by ~4 seconds per camera. This flushes
+  initial black frames from A4Tech cameras while AGC/AWB stabilises.
+
+================================================================================
+10. FILE REFERENCE
+================================================================================
+app.py :2297 lines
+  - _compute_iou() / _match_boxes()       : IoU tracking helpers
+  - _crop_face_from_box()                 : extracts head crop from box
+  - yolo_detect_loop()                    : live YOLO cam thread
+  - face_recognition_loop()               : processes YOLO cam track results
+  - surv_detect_loop(cam_id)              : surv cam thread with local IoU tracker
+  - surv_capture_loop(cam_id, phys_idx)   : raw frame capture from surv cam
+  - update_sighting() / _cast_vote()      : state machine + voting
+  - update_unknown_sighting()             : deferred Telegram alert
+
+detection/face_utils.py :269 lines
+  - recognize_face(img, access_rules)     : main face identification function
+  - _build_db()                           : load face photos → embeddings
+  - _normalize_lighting()                 : CLAHE preprocessing
+  - save_face_image() / delete_face_photo() : web UI CRUD
+
+detection/config.py
+  - TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+  - COOLDOWN_SEC, UNKNOWN_DEFER_SEC
+  - ACCESS_START, ACCESS_END (active hours)

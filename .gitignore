@@ -7,3 +7,4 @@ venv/
 temp_detection_*.jpg
 detection_log.txt
 detection/camera_calibration.json
+captures

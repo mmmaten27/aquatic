@@ -118,40 +118,57 @@
         </div>
     </div>
 
-    <!-- Table -->
+    <!-- Tabs -->
     <div class="glass-card overflow-hidden fade-in">
-        <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100/80">
-            <span class="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                <i class="fas fa-door-open text-cyan-500"></i> 出入紀錄
-            </span>
-            <span id="total-label" class="text-xs text-slate-400"></span>
+        <div class="flex border-b border-slate-100">
+            <button id="tab-entry" onclick="switchTab('entry')"
+                class="flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2 transition-colors border-b-2 border-cyan-500 text-cyan-700">
+                <i class="fas fa-door-open"></i> 人員進出紀錄
+                <span id="tab-entry-count" class="text-xs bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded-full"></span>
+            </button>
+            <button id="tab-unknown" onclick="switchTab('unknown')"
+                class="flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2 transition-colors border-b-2 border-transparent text-slate-400 hover:text-slate-600">
+                <i class="fas fa-user-secret"></i> 未知人員警報
+                <span id="tab-unknown-count" class="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full"></span>
+            </button>
         </div>
 
-        <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-                <thead>
-                    <tr class="bg-slate-50/60 text-slate-500 text-xs uppercase tracking-wide">
-                        <th class="px-4 py-3 text-left font-medium">成員姓名</th>
-                        <th class="px-4 py-3 text-left font-medium">進入時間</th>
-                        <th class="px-4 py-3 text-center font-medium">進入攝影機</th>
-                        <th class="px-4 py-3 text-left font-medium">離開時間</th>
-                        <th class="px-4 py-3 text-center font-medium">離開攝影機</th>
-                        <th class="px-4 py-3 text-center font-medium">停留時間</th>
-                        <th class="px-4 py-3 text-center font-medium">狀態</th>
-                    </tr>
-                </thead>
-                <tbody id="history-tbody">
-                    <tr><td colspan="7" class="text-center py-12 text-slate-400">
-                        <i class="fas fa-spinner fa-spin mr-2"></i>載入中…
-                    </td></tr>
-                </tbody>
-            </table>
+        <!-- Tab: Entry/Exit -->
+        <div id="panel-entry">
+            <div class="flex items-center justify-between px-5 py-2.5 bg-slate-50/50 border-b border-slate-100">
+                <span id="total-label" class="text-xs text-slate-400"></span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-50/60 text-slate-500 text-xs tracking-wide">
+                            <th class="px-4 py-3 text-left font-medium">成員</th>
+                            <th class="px-4 py-3 text-left font-medium">進入時間</th>
+                            <th class="px-4 py-3 text-left font-medium">離開時間</th>
+                            <th class="px-4 py-3 text-center font-medium">停留時間</th>
+                            <th class="px-4 py-3 text-center font-medium">狀態</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody">
+                        <tr><td colspan="5" class="text-center py-12 text-slate-400">
+                            <i class="fas fa-spinner fa-spin mr-2"></i>載入中…
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex items-center justify-between px-5 py-3 border-t border-slate-100/80">
+                <span id="page-info" class="text-xs text-slate-400"></span>
+                <div id="page-buttons" class="flex items-center gap-1"></div>
+            </div>
         </div>
 
-        <!-- Pagination -->
-        <div class="flex items-center justify-between px-5 py-3 border-t border-slate-100/80">
-            <span id="page-info" class="text-xs text-slate-400"></span>
-            <div id="page-buttons" class="flex items-center gap-1"></div>
+        <!-- Tab: Unknown alerts -->
+        <div id="panel-unknown" class="hidden">
+            <div class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3" id="unknown-grid">
+                <div class="col-span-full text-center py-12 text-slate-400">
+                    <i class="fas fa-spinner fa-spin mr-2"></i>載入中…
+                </div>
+            </div>
         </div>
     </div>
 
@@ -160,25 +177,53 @@
 <script>
     let currentPage = 1;
     let totalPages  = 1;
+    let activeTab   = 'entry';
 
-    function formatDuration(minutes) {
-        if (minutes === null || minutes === undefined) return '—';
-        if (minutes < 1)  return '< 1 分鐘';
-        if (minutes < 60) return `${minutes} 分鐘`;
-        const h = Math.floor(minutes / 60), m = minutes % 60;
-        return m > 0 ? `${h} 小時 ${m} 分鐘` : `${h} 小時`;
-    }
-
-    function camLabel(id) {
-        return {1:'攝影機 2', 2:'攝影機 3', 3:'攝影機 4'}[id] ?? `cam${id}`;
+    // ── helpers ────────────────────────────────────────────────────────────
+    function fmtDuration(min) {
+        if (min == null) return '—';
+        if (min < 1)  return '< 1 分鐘';
+        if (min < 60) return `${min} 分鐘`;
+        const h = Math.floor(min / 60), m = min % 60;
+        return m ? `${h} 小時 ${m} 分` : `${h} 小時`;
     }
 
     function initials(name) {
         if (!name) return '?';
         const p = name.trim().split(/\s+/);
-        return p.length >= 2 ? (p[0][0] + p[p.length-1][0]).toUpperCase() : name.slice(0,2).toUpperCase();
+        return (p.length >= 2 ? p[0][0]+p[p.length-1][0] : name.slice(0,2)).toUpperCase();
     }
 
+    const AVATAR_COLORS = [
+        'bg-cyan-500','bg-blue-500','bg-violet-500',
+        'bg-rose-500','bg-amber-500','bg-emerald-500'
+    ];
+    function avatarColor(name) {
+        let h = 0;
+        for (const c of (name||'?')) h = (h*31 + c.charCodeAt(0)) & 0xffff;
+        return AVATAR_COLORS[h % AVATAR_COLORS.length];
+    }
+
+    // ── tab switching ───────────────────────────────────────────────────────
+    function switchTab(tab) {
+        activeTab = tab;
+        ['entry','unknown'].forEach(t => {
+            const btn   = document.getElementById(`tab-${t}`);
+            const panel = document.getElementById(`panel-${t}`);
+            if (t === tab) {
+                btn.classList.replace('border-transparent','border-cyan-500');
+                btn.classList.replace('text-slate-400','text-cyan-700');
+                panel.classList.remove('hidden');
+            } else {
+                btn.classList.replace('border-cyan-500','border-transparent');
+                btn.classList.replace('text-cyan-700','text-slate-400');
+                panel.classList.add('hidden');
+            }
+        });
+        if (tab === 'unknown') loadUnknownAlerts();
+    }
+
+    // ── entry/exit history ──────────────────────────────────────────────────
     async function loadHistory(page = 1) {
         currentPage = page;
         const search   = document.getElementById('filter-search').value.trim();
@@ -191,7 +236,7 @@
         if (dateTo)   params.append('date_to',   dateTo);
 
         const tbody = document.getElementById('history-tbody');
-        tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-slate-400">
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-slate-400">
             <i class="fas fa-spinner fa-spin mr-2"></i>載入中…</td></tr>`;
 
         try {
@@ -201,12 +246,14 @@
 
             totalPages = data.total_pages;
             document.getElementById('total-label').textContent =
-                `共 ${data.total.toLocaleString()} 筆資料`;
+                data.total > 0 ? `共 ${data.total.toLocaleString()} 筆紀錄` : '';
+            document.getElementById('tab-entry-count').textContent =
+                data.total > 0 ? data.total : '';
 
             renderTable(data.records);
             renderPagination(data.page, data.total_pages, data.total, data.per_page);
         } catch (e) {
-            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-red-400">
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-red-400">
                 <i class="fas fa-exclamation-circle mr-2"></i>${e.message}</td></tr>`;
         }
     }
@@ -214,88 +261,118 @@
     function renderTable(records) {
         const tbody = document.getElementById('history-tbody');
         if (!records.length) {
-            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-12 text-slate-400">
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-slate-400">
                 <i class="fas fa-inbox mr-2 text-lg"></i><br>查無資料</td></tr>`;
             return;
         }
         tbody.innerHTML = records.map(r => {
-            const inside = !r.exited_at;
+            const inside  = !r.exited_at;
+            const folder  = r.face_folder || '';
+            const name    = r.person_name || '—';
+
+            const avatarHtml = folder
+                ? `<img src="/api/face-photo/${folder}" class="w-9 h-9 rounded-full object-cover flex-shrink-0"
+                       onerror="this.replaceWith(mkAvatar('${name}'))">`
+                : `<div class="w-9 h-9 rounded-full ${avatarColor(name)} flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${initials(name)}</div>`;
+
             const statusBadge = inside
-                ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
-                       <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>仍在室內
+                ? `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                       <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>在室內
                    </span>`
-                : `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                : `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500">
                        <span class="w-1.5 h-1.5 bg-slate-400 rounded-full"></span>已離開
                    </span>`;
-            const exitTime = r.exited_at
-                ? `<span class="text-slate-700">${r.exited_at}</span>`
-                : `<span class="text-slate-400 italic">—</span>`;
-            const exitCam = r.exit_cam
-                ? `<span class="text-xs bg-sky-50 text-sky-600 border border-sky-100 rounded-lg px-2 py-0.5">${camLabel(r.exit_cam)}</span>`
-                : `<span class="text-slate-300">—</span>`;
 
-            return `<tr class="border-t border-slate-100 hover:bg-cyan-50/40 transition-colors ${inside ? 'still-inside' : ''}">
+            const exitCell = r.exited_at
+                ? `<span class="text-slate-700">${r.exited_at}</span>`
+                : `<span class="text-slate-300 italic">—</span>`;
+
+            return `<tr class="border-t border-slate-100 hover:bg-cyan-50/30 transition-colors">
                 <td class="px-4 py-3">
-                    <div class="flex items-center gap-2">
-                        <div class="w-7 h-7 rounded-full bg-cyan-100 text-cyan-700 flex items-center justify-center text-xs font-bold shrink-0">${initials(r.person_name)}</div>
-                        <span class="font-medium text-slate-700">${r.person_name ?? '—'}</span>
+                    <div class="flex items-center gap-2.5">
+                        ${avatarHtml}
+                        <span class="font-semibold text-slate-800">${name}</span>
                     </div>
                 </td>
-                <td class="px-4 py-3 text-slate-700 whitespace-nowrap">${r.entered_at}</td>
-                <td class="px-4 py-3 text-center">
-                    <span class="text-xs bg-cyan-50 text-cyan-600 border border-cyan-100 rounded-lg px-2 py-0.5">${camLabel(r.entry_cam)}</span>
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap">${exitTime}</td>
-                <td class="px-4 py-3 text-center">${exitCam}</td>
-                <td class="px-4 py-3 text-center text-slate-600 font-medium">${formatDuration(r.duration_min)}</td>
+                <td class="px-4 py-3 text-slate-600 whitespace-nowrap text-sm">${r.entered_at}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm">${exitCell}</td>
+                <td class="px-4 py-3 text-center text-slate-600 font-medium text-sm">${fmtDuration(r.duration_min)}</td>
                 <td class="px-4 py-3 text-center">${statusBadge}</td>
             </tr>`;
         }).join('');
     }
 
+    function mkAvatar(name) {
+        const d = document.createElement('div');
+        d.className = `w-9 h-9 rounded-full ${avatarColor(name)} flex items-center justify-center text-white text-xs font-bold flex-shrink-0`;
+        d.textContent = initials(name);
+        return d;
+    }
+
     function renderPagination(page, total_pages, total, per_page) {
-        const start = Math.min((page - 1) * per_page + 1, total);
-        const end   = Math.min(page * per_page, total);
+        const start = Math.min((page-1)*per_page+1, total);
+        const end   = Math.min(page*per_page, total);
         document.getElementById('page-info').textContent =
             total > 0 ? `顯示 ${start}–${end}，共 ${total.toLocaleString()} 筆` : '';
 
         const btns = document.getElementById('page-buttons');
         btns.innerHTML = '';
-
-        const addBtn = (html, pg, disabled = false, active = false) => {
+        const addBtn = (html, pg, disabled=false, active=false) => {
             const b = document.createElement('button');
-            b.className = `btn-page text-slate-600 ${active ? 'active' : ''}`;
-            b.innerHTML = html;
-            b.disabled  = disabled;
+            b.className = `btn-page text-slate-600 ${active?'active':''}`;
+            b.innerHTML = html; b.disabled = disabled;
             if (!disabled) b.onclick = () => loadHistory(pg);
             btns.appendChild(b);
         };
-
-        addBtn('<i class="fas fa-chevron-left text-xs"></i>', page - 1, page <= 1);
-
+        addBtn('<i class="fas fa-chevron-left text-xs"></i>', page-1, page<=1);
         let pages = new Set([1, total_pages]);
-        for (let p = Math.max(1, page - 2); p <= Math.min(total_pages, page + 2); p++) pages.add(p);
-        let sorted = [...pages].sort((a, b) => a - b), prev = 0;
+        for (let p=Math.max(1,page-2); p<=Math.min(total_pages,page+2); p++) pages.add(p);
+        let sorted=[...pages].sort((a,b)=>a-b), prev=0;
         sorted.forEach(p => {
-            if (p - prev > 1) {
-                const dot = document.createElement('span');
-                dot.className = 'text-slate-400 text-xs px-1';
-                dot.textContent = '…';
-                btns.appendChild(dot);
-            }
-            addBtn(p, p, false, p === page);
-            prev = p;
+            if (p-prev>1) { const s=document.createElement('span'); s.className='text-slate-400 text-xs px-1'; s.textContent='…'; btns.appendChild(s); }
+            addBtn(p, p, false, p===page); prev=p;
         });
-
-        addBtn('<i class="fas fa-chevron-right text-xs"></i>', page + 1, page >= total_pages);
+        addBtn('<i class="fas fa-chevron-right text-xs"></i>', page+1, page>=total_pages);
     }
 
+    // ── unknown alerts ──────────────────────────────────────────────────────
+    async function loadUnknownAlerts() {
+        const grid = document.getElementById('unknown-grid');
+        grid.innerHTML = `<div class="col-span-full text-center py-12 text-slate-400"><i class="fas fa-spinner fa-spin mr-2"></i>載入中…</div>`;
+        try {
+            const res  = await fetch('/api/unknown-alerts');
+            const data = await res.json();
+            const alerts = data.alerts || [];
+            document.getElementById('tab-unknown-count').textContent = alerts.length || '';
+            if (!alerts.length) {
+                grid.innerHTML = `<div class="col-span-full text-center py-12 text-slate-400"><i class="fas fa-shield-alt text-3xl mb-2 block opacity-30"></i>尚無未知人員紀錄</div>`;
+                return;
+            }
+            grid.innerHTML = alerts.map(a => `
+                <div class="rounded-2xl overflow-hidden bg-white/70 border border-slate-100 shadow-sm hover:shadow-md transition group">
+                    <div class="aspect-video bg-slate-100 overflow-hidden">
+                        <img src="${a.url}?t=${Date.now()}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                             onerror="this.parentElement.innerHTML='<div class=\'flex items-center justify-center h-full text-slate-300 text-3xl\'>📷</div>'">
+                    </div>
+                    <div class="px-3 py-2">
+                        <div class="flex items-center gap-1.5 mb-0.5">
+                            <span class="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"></span>
+                            <span class="text-xs font-semibold text-amber-700">未知人員</span>
+                        </div>
+                        <div class="text-xs text-slate-500">${a.time}</div>
+                    </div>
+                </div>`).join('');
+        } catch(e) {
+            grid.innerHTML = `<div class="col-span-full text-center py-8 text-red-400">載入失敗</div>`;
+        }
+    }
+
+    // ── room status ─────────────────────────────────────────────────────────
     async function loadRoomStatus() {
         try {
-            const res  = await fetch('/api/room/status');
-            const data = await res.json();
-            document.getElementById('room-count').textContent = `${data.count} 人在室內`;
-        } catch (_) {}
+            const d = await (await fetch('/api/room/status')).json();
+            document.getElementById('room-count').textContent = `${d.count} 人在室內`;
+        } catch(_) {}
     }
 
     function clearFilters() {

@@ -49,6 +49,7 @@ VALID_TANKS = {1: 'tank1', 2: 'tank2', 3: 'tank3'}
 # Global variables
 model = None
 lock = threading.Lock()
+model_infer_lock = threading.Lock()  # prevent concurrent model.track() across cameras
 last_telegram_sent = 0
 telegram_thread_pool = []
 max_telegram_threads = 3
@@ -63,29 +64,66 @@ last_detection_timestamp = "-"
 face_results             = {}
 face_result_lock         = threading.Lock()
 face_pending_frame       = None
-face_pending_boxes       = None
+face_pending_items       = []       # list of (track_id, box) instead of just boxes
 face_pending_lock        = threading.Lock()
+
+# Track buffer: per track_id keep N recent face crops + identity
+TRACK_BUFFER_SIZE     = 8          # max crops per track
+TRACK_CLEANUP_TIMEOUT = 5.0        # seconds without sighting → remove track
+UNKNOWN_DEFER_SEC     = 20         # wait N sec before sending "unknown" alert
+track_crop_buffer     = {}         # {track_id: [crop_img, ...]}
+track_identity        = {}         # {track_id: {name, status, confidence}}
+track_last_seen       = {}         # {track_id: timestamp}
+track_first_seen      = {}         # {track_id: timestamp} — used for deferred unknown alert
+track_buffer_lock     = threading.Lock()
 face_recognition_ran_once = False   # True after first recognition cycle completes
 access_rules_cache        = []
 access_rules_cache_time   = 0.0
 latest_face_list          = []   # list of {name, status, confidence, detected_at} for all current detections
 latest_face_lock          = threading.Lock()
+cam2_capture_path         = None   # latest frame captured by Camera 2
+cam2_capture_lock         = threading.Lock()
+cam2_face_list            = []     # latest recognition results from Camera 2
+cam2_face_lock            = threading.Lock()
 
-# ── Room Entry/Exit Detection ─────────────────────────────────
-EXIT_TRIGGER_DELAY   = 5    # sec: wait after cam3 sees person before checking cam2
-CAM2_PERSON_TIMEOUT  = 8    # sec: if cam2 hasn't seen person in N sec → left room
-ENTRY_COOLDOWN_SEC   = 30   # sec: min gap between ENTER events per person
-SURV_DETECT_INTERVAL = 0.5  # sec: how often surv detect loop runs (~2 fps)
-SURV_FACE_INTERVAL   = 3.0  # sec: face recognition rate limit per surv camera
+# ── Unified Access Control ─────────────────────────────────────
+ENTRY_WINDOW_SEC       = 12   # both cam1+cam2 must see person within N sec → ENTER
+CAM2_SOLO_CONFIDENCE   = 0.80 # if cam2 sees with confidence >= this, ENTER without waiting cam1
+PRESENCE_WINDOW_SEC    = 10   # cam2/yolo must see person within N sec → still inside
+EXIT_WINDOW_SEC        = 8    # cam3 must see person within N sec → EXIT candidate
+EXIT_CONFIRM_DELAY_SEC = 8    # wait N sec for presence to clear before logging EXIT
+EXIT_MAX_WAIT_SEC      = 30   # max timeout for exit confirmation
+UNKNOWN_COOLDOWN_SEC   = 60   # min sec between unknown-person alerts per camera
+SURV_DETECT_INTERVAL   = 0.5  # sec: surv detect loop interval
+SURV_FACE_INTERVAL     = 3.0  # sec: face recognition rate limit per surv camera
 
-cam_identities     = {1: {}, 2: {}, 3: {}}  # {cam_id: {face_folder: last_seen_ts}}
-cam_ident_lock     = threading.Lock()
-room_occupants     = {}                       # {face_folder: {name, entered_at}}
-room_lock          = threading.Lock()
-pending_exit       = {}                       # {face_folder: threading.Timer}
-pending_exit_lock  = threading.Lock()
-entry_cooldown_ts  = {}                       # {face_folder: last_entry_time}
-entry_cd_lock      = threading.Lock()
+# person_state: {face_folder: {name, inside, entered_at, last_seen, exit_pending, exit_started_at}}
+person_state      = {}
+person_state_lock = threading.Lock()
+unknown_last_alert = {}  # {cam_id: last_alert_timestamp}
+unknown_alert_lock = threading.Lock()
+
+# Best-frame buffers: keep up to N frames per surv cam, pick sharpest for recognition
+BEST_FRAME_BUFFER_SIZE = 5
+best_frame_buffers = {1: [], 2: [], 3: []}
+best_frame_locks   = {1: threading.Lock(), 2: threading.Lock(), 3: threading.Lock()}
+
+# Voting: cam1 and cam3 require N consistent recognitions before update_sighting()
+# cam2 updates immediately (real-time presence tracking)
+VOTE_REQUIRED      = 2    # consecutive recognitions needed for cam1/cam3
+VOTE_WINDOW_SEC    = 12   # votes older than this are discarded
+_vote_records      = {1: {}, 3: {}}   # {cam_id: {face_folder: [timestamps]}}
+_vote_lock         = threading.Lock()
+
+# ── IoU Tracking ───────────────────────────────────────────────
+IOU_THRESHOLD       = 0.15  # primary: IoU threshold for cross-frame matching
+CENTER_DIST_LIMIT   = 0.20  # fallback: max center movement as fraction of frame width
+
+# ── Per-camera face-buffer size ────────────────────────────────
+SURV_TRACK_BUFFER_SIZES = {1: 12, 2: 6, 3: 4}  # cam1 backup=more buffer, cam3 no face rec
+
+# ── Cameras that skip face recognition (e.g. exit cam sees only legs) ──
+CAM_NO_FACE_RECOGNITION = {3}
 
 # ── YOLO camera → 即時 - YOLO AI section ──
 yolo_cap         = None
@@ -140,18 +178,24 @@ def close_all_cameras():
             print(f"❌ 攝影機 {cam_id}: 關閉失敗 - {e}")
     surv_caps.clear()
 
+def _flush_camera(cap, n=15):
+    """Read and discard N frames to flush DirectShow initial black frames."""
+    for _ in range(n):
+        cap.read()
+
+
 def surv_capture_loop(cam_id, phys_idx):
     """cam_id = logical display ID (1/2/3), phys_idx = physical camera index."""
     global surv_frames, surv_frame_counts, surv_online, surv_caps, running
     frame_interval = 1.0 / 5
-    surv_idle_loops = 0
+    surv_idle_loops  = 0
+    consecutive_fail = 0   # transient read() failures before real reconnect
     while running:
         try:
             t0 = time.time()
             cap_obj = surv_caps.get(cam_id)
             if not cap_obj:
                 surv_idle_loops += 1
-                # Try to reinitialize camera every ~15 seconds when offline
                 if surv_idle_loops >= 30:
                     surv_idle_loops = 0
                     refresh_camera_indices()
@@ -162,15 +206,27 @@ def surv_capture_loop(cam_id, phys_idx):
                         c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                         c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                         c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                        _flush_camera(c)
                         surv_caps[cam_id]   = c
                         surv_online[cam_id] = True
+                        consecutive_fail    = 0
                         print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 重新初始化成功")
                     else:
                         c.release()
                 time.sleep(0.5)
                 continue
+
             success, img = cap_obj.read()
+
             if not success:
+                consecutive_fail += 1
+                print(f"⚠️ CAM{cam_id}: read() failed (#{consecutive_fail})")
+                if consecutive_fail < 8:
+                    # Transient failure — wait briefly and retry without reconnecting
+                    time.sleep(0.2)
+                    continue
+                # Persistent failure → full reconnect
+                consecutive_fail = 0
                 surv_online[cam_id] = False
                 time.sleep(1)
                 old_cap = surv_caps.get(cam_id)
@@ -187,17 +243,27 @@ def surv_capture_loop(cam_id, phys_idx):
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    surv_caps[cam_id] = new_cap
+                    _flush_camera(new_cap)
+                    surv_caps[cam_id]   = new_cap
                     surv_online[cam_id] = True
                     print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 重新連接成功")
                 else:
                     new_cap.release()
                 continue
+
+            consecutive_fail = 0
+
+            # Skip obviously-black frames (DirectShow warm-up artifact)
+            if img.mean() < 2.0:
+                time.sleep(0.05)
+                continue
+
             ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 50])
             if ret:
                 with surv_locks[cam_id]:
-                    surv_frames[cam_id] = buf.tobytes()
+                    surv_frames[cam_id]       = buf.tobytes()
                     surv_frame_counts[cam_id] += 1
+
             elapsed = time.time() - t0
             sleep_t = frame_interval - elapsed
             if sleep_t > 0:
@@ -211,12 +277,13 @@ def yolo_capture_loop():
     global yolo_cap, yolo_frame, yolo_frame_count, yolo_online
     global model, last_telegram_sent, running
     global current_person_count, daily_detection_total, last_detection_timestamp
-    global face_pending_frame, face_pending_boxes, face_recognition_ran_once
+    global face_pending_frame, face_pending_items, face_recognition_ran_once
 
     frame_interval = 1.0 / 10   # 10 fps target
     detect_every   = 3
     local_count    = 0
-    last_boxes     = []
+    last_boxes     = []          # list of boxes (used only for drawing & counting)
+    last_track_ids = []          # parallel list of track_id per box
     idle_loops     = 0
     last_frame_time = 0
 
@@ -268,12 +335,20 @@ def yolo_capture_loop():
 
             if model is not None and local_count % detect_every == 0:
                 try:
-                    results    = model(img, classes=[0], verbose=False)
-                    last_boxes = [b for b in results[0].boxes
-                                  if float(b.conf[0]) >= MIN_CONFIDENCE]
+                    with model_infer_lock:
+                        results = model.track(img, classes=[0], persist=True, verbose=False)
+                    raw_boxes = [b for b in results[0].boxes
+                                 if float(b.conf[0]) >= MIN_CONFIDENCE]
+                    last_boxes = []
+                    last_track_ids = []
+                    for b in raw_boxes:
+                        tid = int(b.id[0]) if b.id is not None else None
+                        last_boxes.append(b)
+                        last_track_ids.append(tid)
                 except Exception as e:
                     print(f"❌ AI DETECTION: {e}")
                     last_boxes = []
+                    last_track_ids = []
 
                 with lock:
                     current_person_count = len(last_boxes)
@@ -282,10 +357,11 @@ def yolo_capture_loop():
                 if last_boxes and local_count % (detect_every * 5) == 0:
                     with face_pending_lock:
                         face_pending_frame = img.copy()
-                        face_pending_boxes = list(last_boxes)
+                        face_pending_items = list(zip(last_track_ids, last_boxes))
 
                 if last_boxes:
                     now = time.time()
+                    # Save image + log to detection_logs (for history image lookup)
                     if now - last_telegram_sent >= COOLDOWN_SECONDS:
                         count = len(last_boxes)
                         daily_detection_total += count
@@ -296,67 +372,53 @@ def yolo_capture_loop():
                         image_path     = os.path.join("detection", "captures", image_filename)
                         cv2.imwrite(image_path, img)
 
-                        # Read latest face recognition results
-                        with face_result_lock:
-                            current_face = face_results.copy()
-
-                        primary      = current_face.get(0, {"name": None, "status": "unknown"})
-                        p_name       = primary.get("name")
-                        p_status     = primary.get("status", "unknown")
-                        all_authorized = bool(current_face) and all(
-                            r.get("status") == "authorized" for r in current_face.values()
-                        )
+                        with track_buffer_lock:
+                            current_tracks = track_identity.copy()
+                        primary  = next(iter(current_tracks.values()), {"name": None, "status": "unknown"})
+                        p_name   = primary.get("name")
+                        p_status = primary.get("status", "unknown")
 
                         conn = get_db_connection()
                         try:
                             with conn.cursor() as cur:
                                 cur.execute(
-                                    "INSERT INTO detection_logs (person_count, image_filename, person_name, access_status) VALUES (%s, %s, %s, %s)",
+                                    "INSERT INTO detection_logs "
+                                    "(person_count, image_filename, person_name, access_status) "
+                                    "VALUES (%s, %s, %s, %s)",
                                     (count, image_filename, p_name, p_status)
                                 )
                                 conn.commit()
                         except Exception as e:
-                            print(f"❌ DB: 記錄偵測失敗 - {e}")
+                            print(f"❌ DB: detection_logs insert failed - {e}")
                         finally:
                             conn.close()
 
-                        if all_authorized:
-                            names = ", ".join(r.get("name", "") for r in current_face.values())
-                            print(f"✅ 授權人員進入: {names}")
-                        elif not face_recognition_ran_once:
-                            # Recognition hasn't completed its first cycle yet — skip alert
-                            print(f"⏳ 偵測到 {count} 人，等待人臉識別初始化...")
-                        else:
-                            has_unauth = any(
-                                r.get("status") == "unauthorized" for r in current_face.values()
-                            )
-                            if has_unauth:
-                                bad_names = ", ".join(
-                                    r.get("name") or "未知"
-                                    for r in current_face.values()
-                                    if r.get("status") == "unauthorized"
-                                )
-                                msg = (f"🚨 未授權人員入侵！\n👤 {bad_names}\n"
-                                       f"👥 偵測到: {count} 人\n"
-                                       f"🕐 {time.strftime('%Y/%m/%d %H:%M:%S')}\n"
-                                       f"📍 智慧物聯實驗室")
-                            else:
-                                msg = (f"⚠️ 未知人員偵測！\n👥 偵測到: {count} 人\n"
-                                       f"🕐 {time.strftime('%Y/%m/%d %H:%M:%S')}\n"
-                                       f"📍 智慧物聯實驗室")
-                            send_telegram_notification(msg, image_path)
-
                         last_telegram_sent = now
-                    else:
-                        print(f"✅ AI DETECTION: 偵測到 {len(last_boxes)} 人 (冷卻中)")
 
-            # Draw bounding boxes with face recognition labels
-            with face_result_lock:
-                draw_face = face_results.copy()
+                    # Feed YOLO-cam sightings into unified state machine (via track_identity)
+                    with track_buffer_lock:
+                        current_tracks = track_identity.copy()
+                    for tid, r in current_tracks.items():
+                        r_name   = r.get("name")
+                        r_status = r.get("status", "unknown")
+                        if r_name and r_status != "unknown":
+                            folder = next(
+                                (rule["face_folder"] for rule in access_rules_cache
+                                 if rule["name"] == r_name),
+                                r_name
+                            )
+                            update_sighting(folder, r_name, 'yolo')
+                    # Unknown tracks are handled deferred via _cleanup_stale_tracks
+                    # so we don't call update_unknown_sighting here anymore
+
+            # Draw bounding boxes with face recognition labels (via track_id)
+            with track_buffer_lock:
+                draw_track = track_identity.copy()
 
             for i, box in enumerate(last_boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                info   = draw_face.get(i)
+                tid   = last_track_ids[i] if i < len(last_track_ids) else None
+                info  = draw_track.get(tid) if tid is not None else None
                 if info:
                     status = info.get("status", "unknown")
                     name   = info.get("name") or ""
@@ -393,86 +455,362 @@ def yolo_capture_loop():
             time.sleep(1)
 
 
+# ── Capture file retention ──────────────────────────────────────
+CAPTURE_CAM2_KEEP_HOURS  = 24   # cam2 frames (saved every ~3s — high volume)
+CAPTURE_DETECT_KEEP_DAYS = 7    # YOLO detection captures
+CAPTURE_UNKNOWN_MAX      = 200  # max unknown-person captures to keep
+
+
+def _ts_fmt(val):
+    """Convert timedelta / str to HH:MM string."""
+    if val is None:
+        return "00:00"
+    if isinstance(val, str):
+        return str(val)[:5]
+    total = int(val.total_seconds())
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
+
+
+def _ensure_access_rules():
+    """Refresh access_rules_cache from DB if older than 60 s. Thread-safe."""
+    global access_rules_cache, access_rules_cache_time
+    if time.time() - access_rules_cache_time < 60:
+        return
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, face_folder, access_start, access_end, is_active "
+                "FROM authorized_personnel"
+            )
+            rows = cur.fetchall()
+        conn.close()
+        access_rules_cache = [
+            {
+                "name":         r["name"],
+                "face_folder":  r["face_folder"],
+                "access_start": _ts_fmt(r.get("access_start")),
+                "access_end":   _ts_fmt(r.get("access_end")),
+                "is_active":    bool(r.get("is_active", 1)),
+            }
+            for r in rows
+        ]
+        access_rules_cache_time = time.time()
+        print(f"🔄 ACCESS RULES: refreshed ({len(access_rules_cache)} personnel)")
+    except Exception as e:
+        print(f"⚠️ ACCESS RULES: refresh failed - {e}")
+
+
+def _restore_person_state():
+    """On startup, rebuild person_state from room_occupants_log so EXIT events
+    can still fire correctly even after a server restart."""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT face_folder, person_name, entered_at FROM room_occupants_log"
+            )
+            rows = cur.fetchall()
+        conn.close()
+        with person_state_lock:
+            for r in rows:
+                ff = r["face_folder"]
+                if ff not in person_state:
+                    person_state[ff] = {
+                        "name":            r["person_name"],
+                        "inside":          True,
+                        "entered_at":      r.get("entered_at"),
+                        "last_seen":       {1: 0, 2: 0, 3: 0, 'yolo': 0},
+                        "last_confidence": {1: 0.0, 2: 0.0, 3: 0.0, 'yolo': 0.0},
+                        "exit_pending":    False,
+                        "exit_started_at": 0,
+                    }
+        print(f"✅ STATE RESTORE: {len(rows)} person(s) restored from room_occupants_log")
+    except Exception as e:
+        print(f"⚠️ STATE RESTORE: failed - {e}")
+
+
+def cleanup_old_captures():
+    """Background thread: delete stale capture files to prevent disk fill."""
+    captures_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "detection", "captures"
+    )
+    while running:
+        try:
+            if os.path.isdir(captures_dir):
+                now = time.time()
+                removed = 0
+                for fname in os.listdir(captures_dir):
+                    fpath = os.path.join(captures_dir, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    age = now - os.path.getmtime(fpath)
+                    if fname.startswith("cam2_") and age > CAPTURE_CAM2_KEEP_HOURS * 3600:
+                        os.remove(fpath)
+                        removed += 1
+                    elif fname.startswith("detection_") and age > CAPTURE_DETECT_KEEP_DAYS * 86400:
+                        os.remove(fpath)
+                        removed += 1
+
+                # Keep only newest CAPTURE_UNKNOWN_MAX unknown captures
+                unk_files = sorted(
+                    [os.path.join(captures_dir, f) for f in os.listdir(captures_dir)
+                     if f.startswith("unknown_cam")],
+                    key=os.path.getmtime, reverse=True
+                )
+                for old in unk_files[CAPTURE_UNKNOWN_MAX:]:
+                    try:
+                        os.remove(old)
+                        removed += 1
+                    except Exception:
+                        pass
+
+                if removed:
+                    print(f"🗑️ CLEANUP: removed {removed} old capture file(s)")
+        except Exception as e:
+            print(f"⚠️ CLEANUP: {e}")
+        time.sleep(3600)  # run once per hour
+
+
+def _compute_iou(box_a, box_b):
+    """IoU between two YOLO boxes (tensor with xyxy format)."""
+    x1 = max(box_a[0], box_b[0])
+    y1 = max(box_a[1], box_b[1])
+    x2 = min(box_a[2], box_b[2])
+    y2 = min(box_a[3], box_b[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    a_area = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    b_area = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    return inter / (a_area + b_area - inter + 1e-8)
+
+
+def _match_boxes(prev_boxes, curr_boxes, iou_thresh=None, frame_width=640):
+    """
+    Match current frame boxes to previous tracks.
+    1. Primary: IoU (threshold 0.15) — high overlap = same track
+    2. Fallback: center distance (threshold 20% of frame width) — catches fast walkers
+    prev_boxes: list of (box_xyxy, track_id)
+    curr_boxes: list of box (xyxy tensor)
+    Returns: {curr_idx: track_id}
+    """
+    if iou_thresh is None:
+        iou_thresh = IOU_THRESHOLD
+    center_limit_px = frame_width * CENTER_DIST_LIMIT  # 640*0.20 = 128px
+
+    matched   = {}
+    used_tids = set()
+    next_id = (max([tid for _, tid in prev_boxes], default=0) + 1) if prev_boxes else 1
+
+    for ci, cb in enumerate(curr_boxes):
+        cb_xyxy = [float(cb[0]), float(cb[1]), float(cb[2]), float(cb[3])]
+        cx = (cb_xyxy[0] + cb_xyxy[2]) / 2
+        cy = (cb_xyxy[1] + cb_xyxy[3]) / 2
+
+        best_iou     = 0.0
+        best_dist    = float("inf")
+        best_tid_iou = None
+        best_tid_center = None
+
+        for pb, ptid in prev_boxes:
+            if ptid in used_tids:
+                continue
+            pb_xyxy = [float(pb[0]), float(pb[1]), float(pb[2]), float(pb[3])]
+
+            # Primary: IoU
+            iou = _compute_iou(cb_xyxy, pb_xyxy)
+            if iou > best_iou and iou >= iou_thresh:
+                best_iou     = iou
+                best_tid_iou = ptid
+
+            # Fallback: center distance
+            px = (pb_xyxy[0] + pb_xyxy[2]) / 2
+            py = (pb_xyxy[1] + pb_xyxy[3]) / 2
+            dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+            if dist < best_dist and dist < center_limit_px:
+                best_dist     = dist
+                best_tid_center = ptid
+
+        # Prefer IoU match; fall back to center distance
+        chosen_tid = best_tid_iou if best_tid_iou is not None else best_tid_center
+
+        if chosen_tid is not None:
+            matched[ci] = chosen_tid
+            used_tids.add(chosen_tid)
+
+    # New tracks for unmatched current boxes
+    for ci in range(len(curr_boxes)):
+        if ci not in matched:
+            matched[ci] = next_id
+            next_id += 1
+
+    return matched
+
+
+def _crop_face_from_box(img, box):
+    """Crop head/shoulder region from a YOLO bounding box. Returns (crop, ok)."""
+    x1, y1, x2, y2 = map(int, box.xyxy[0])
+    box_h   = y2 - y1
+    head_y2 = min(img.shape[0], y1 + int(box_h * 0.40))
+    margin  = max(10, int(box_h * 0.08))
+    crop_y1 = max(0, y1 - margin)
+    crop_x1 = max(0, x1)
+    crop_x2 = min(img.shape[1], x2)
+    face_img = img[crop_y1:head_y2, crop_x1:crop_x2]
+    if face_img.size == 0:
+        return None, False
+    return face_img, True
+
+
+def _cleanup_stale_tracks():
+    """Remove tracks that haven't been seen for TRACK_CLEANUP_TIMEOUT seconds.
+    Also fire deferred unknown alerts for tracks that remained unidentified."""
+    global track_first_seen
+
+    now = time.time()
+
+    # Fire deferred unknown alerts for confirmed-unknown tracks
+    with track_buffer_lock:
+        fire_tids = []
+        for tid, first_seen in list(track_first_seen.items()):
+            if tid in track_identity:
+                track_first_seen.pop(tid, None)  # identified → cancel alert
+                continue
+            if now - first_seen < UNKNOWN_DEFER_SEC:
+                continue
+            # Still alive & still unknown after defer period → fire alert
+            fire_tids.append(tid)
+            track_first_seen.pop(tid, None)
+
+        stale = [tid for tid, t in track_last_seen.items()
+                 if now - t > TRACK_CLEANUP_TIMEOUT]
+        for tid in stale:
+            track_crop_buffer.pop(tid, None)
+            track_identity.pop(tid, None)
+            track_last_seen.pop(tid, None)
+            track_first_seen.pop(tid, None)
+
+    # Fire alerts outside lock (using global yolo_frame for full-scene image)
+    for tid in fire_tids:
+        print(f"🔔 DEFERRED: track {tid} still unknown after {UNKNOWN_DEFER_SEC}s → alert")
+        with yolo_lock:
+            yolo_img_bytes = yolo_frame
+        yolo_img = None
+        if yolo_img_bytes:
+            yolo_img = cv2.imdecode(np.frombuffer(yolo_img_bytes, np.uint8), cv2.IMREAD_COLOR)
+        update_unknown_sighting('yolo', yolo_img)
+
+    if stale:
+        print(f"🧹 TRACK: cleaned {len(stale)} stale track(s)")
+
+
 def face_recognition_loop():
-    """Background thread: run DeepFace on frames queued by yolo_capture_loop."""
-    global face_pending_frame, face_pending_boxes, face_results
-    global access_rules_cache, access_rules_cache_time, running
+    """
+    Background thread: recognize faces using track-aware multi-frame buffer.
+    For each track_id:
+      - If already identified → skip (carry forward identity)
+      - Else → crop head region, try recognize_face
+      - If fail → push crop to buffer (up to TRACK_BUFFER_SIZE)
+      - On next frames: try ALL buffered crops (maybe person turned toward camera later)
+      - If any crop succeeds → tag track_id in track_identity → update person_state
+    """
+    global face_pending_frame, face_pending_items, face_results
+    global running
     global latest_face_list
 
     while running:
-        img   = None
-        boxes = None
+        img     = None
+        items   = []   # list of (track_id, box)
 
         with face_pending_lock:
-            if face_pending_frame is not None and face_pending_boxes is not None:
+            if face_pending_frame is not None and face_pending_items:
                 img   = face_pending_frame.copy()
-                boxes = list(face_pending_boxes)
+                items = list(face_pending_items)
                 face_pending_frame = None
-                face_pending_boxes = None
+                face_pending_items = []
 
         if img is None:
             time.sleep(0.05)
             continue
 
-        # Refresh access rules from DB every 60 seconds
-        now_ts = time.time()
-        if now_ts - access_rules_cache_time > 60:
-            try:
-                conn = get_db_connection()
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT name, face_folder, access_start, access_end, is_active "
-                        "FROM authorized_personnel"
+        _ensure_access_rules()
+        _cleanup_stale_tracks()
+
+        now = time.time()
+
+        with track_buffer_lock:
+            # Mark all current tracks as seen
+            for tid, _ in items:
+                if tid is not None:
+                    track_last_seen[tid] = now
+
+            for tid, box in items:
+                if tid is None:
+                    continue
+
+                # Already identified → no need to re-recognize
+                if tid in track_identity:
+                    continue
+
+                # Record first-seen for deferred unknown alert
+                if tid not in track_first_seen:
+                    track_first_seen[tid] = now
+
+                # Crop head region from current frame
+                face_img, ok = _crop_face_from_box(img, box)
+                if not ok:
+                    continue
+
+                # Try recognize on the current crop
+                result = recognize_face(face_img, access_rules_cache)
+                name   = result.get("name")
+                status = result.get("status", "unknown")
+
+                if name and status != "unknown":
+                    # ✅ Identified!
+                    track_identity[tid] = result
+                    track_crop_buffer.pop(tid, None)  # clear buffer
+                    track_first_seen.pop(tid, None)   # cancel pending unknown alert
+                    print(f"✅ TRACK {tid}: identified as {name} ({status}) conf={result.get('confidence',0):.2f}")
+                    # Feed into state machine
+                    folder = next(
+                        (r["face_folder"] for r in access_rules_cache if r["name"] == name),
+                        name,
                     )
-                    rows = cur.fetchall()
-                conn.close()
+                    update_sighting(folder, name, 'yolo', confidence=result.get("confidence", 0.0))
+                else:
+                    # ❌ Not identified yet → save crop to buffer for retry later
+                    buf = track_crop_buffer.setdefault(tid, [])
+                    buf.append(face_img)
+                    if len(buf) > TRACK_BUFFER_SIZE:
+                        buf.pop(0)
 
-                def _ts(val):
-                    if val is None:
-                        return "00:00"
-                    if isinstance(val, str):
-                        return str(val)[:5]
-                    total = int(val.total_seconds())
-                    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
+                    # Try ALL buffered crops — maybe an older frame had a better angle
+                    identified = False
+                    for idx, old_crop in enumerate(buf):
+                        result2 = recognize_face(old_crop, access_rules_cache)
+                        name2   = result2.get("name")
+                        status2 = result2.get("status", "unknown")
+                        if name2 and status2 != "unknown":
+                            track_identity[tid] = result2
+                            track_crop_buffer.pop(tid, None)
+                            track_first_seen.pop(tid, None)  # cancel pending unknown
+                            print(f"✅ TRACK {tid}: identified via buffer[{idx}] as {name2} ({status2})")
+                            folder = next(
+                                (r["face_folder"] for r in access_rules_cache if r["name"] == name2),
+                                name2,
+                            )
+                            update_sighting(folder, name2, 'yolo', confidence=result2.get("confidence", 0.0))
+                            identified = True
+                            break
 
-                access_rules_cache = [
-                    {
-                        "name":         r["name"],
-                        "face_folder":  r["face_folder"],
-                        "access_start": _ts(r.get("access_start")),
-                        "access_end":   _ts(r.get("access_end")),
-                        "is_active":    bool(r.get("is_active", 1)),
-                    }
-                    for r in rows
-                ]
-                access_rules_cache_time = now_ts
-                print(f"🔄 FACE: Access rules refreshed ({len(access_rules_cache)} personnel)")
-            except Exception as e:
-                print(f"❌ FACE: Failed to refresh access rules - {e}")
+                    if not identified:
+                        if result["status"] == "unknown":
+                            print(f"⏳ TRACK {tid}: not yet identified (buffered {len(buf)} crops)")
 
-        new_results = {}
-        for i, box in enumerate(boxes):
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            # Pass full bounding box — DeepFace's internal detector finds the face
-            # Add a small top margin so the full head is captured
-            margin   = max(10, int((y2 - y1) * 0.08))
-            crop_y1  = max(0, y1 - margin)
-            crop_y2  = min(img.shape[0], y2)
-            crop_x1  = max(0, x1)
-            crop_x2  = min(img.shape[1], x2)
-            face_img = img[crop_y1:crop_y2, crop_x1:crop_x2]
-            if face_img.size == 0:
-                new_results[i] = {"name": None, "status": "unknown", "confidence": 0.0}
-                continue
-            result = recognize_face(face_img, access_rules_cache)
-            new_results[i] = result
-            print(f"🔍 FACE [{i}]: {result}")
-
-        with face_result_lock:
-            face_results = new_results
-
-        # Save all detected persons for dashboard display
-        if new_results:
+        # Build latest_face_list from track_identity for dashboard
+        with track_buffer_lock:
+            current_tracks = track_identity.copy()
+        if current_tracks:
             now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             with latest_face_lock:
                 latest_face_list = [
@@ -482,74 +820,53 @@ def face_recognition_loop():
                         "confidence":  r.get("confidence", 0.0),
                         "detected_at": now_str,
                     }
-                    for r in new_results.values()
+                    for r in current_tracks.values()
                 ]
 
         global face_recognition_ran_once
         face_recognition_ran_once = True
 
 
-def handle_entry(name, face_folder):
-    """Called when cam1 recognizes a person — logs ENTER if not in cooldown."""
-    now = time.time()
-    with entry_cd_lock:
-        if now - entry_cooldown_ts.get(face_folder, 0) < ENTRY_COOLDOWN_SEC:
-            return
-        entry_cooldown_ts[face_folder] = now
-
-    with room_lock:
-        if face_folder in room_occupants:
-            return  # already inside
-        room_occupants[face_folder] = {
-            "name": name,
-            "entered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-    threading.Thread(target=log_room_event,
-                     args=("ENTER", name, face_folder, 1), daemon=True).start()
-    print(f"🚪 ENTER: {name} ({face_folder})")
 
 
-def handle_exit_trigger(name, face_folder):
-    """Called when cam3 recognizes a person — loops until cam2 confirms they've left."""
-    with pending_exit_lock:
-        if face_folder in pending_exit:
-            return
-        pending_exit[face_folder] = True
-
-    def confirm_exit_loop():
-        try:
-            start = time.time()
-            while time.time() - start < 30:
-                time.sleep(1)
-                now = time.time()
-                with cam_ident_lock:
-                    last_seen = cam_identities[2].get(face_folder, 0)
-                if now - last_seen > CAM2_PERSON_TIMEOUT:
-                    with room_lock:
-                        room_occupants.pop(face_folder, None)
-                    threading.Thread(target=log_room_event,
-                                     args=("EXIT", name, face_folder, 3), daemon=True).start()
-                    print(f"🚪 EXIT confirmed: {name} ({face_folder})")
-                    return
-            print(f"🚪 EXIT timeout (30s): {name} ({face_folder}) — person may have left unseen")
-        finally:
-            with pending_exit_lock:
-                pending_exit.pop(face_folder, None)
-
-    threading.Thread(target=confirm_exit_loop, daemon=True).start()
-    print(f"🚪 EXIT pending: {name} ({face_folder}) — monitoring cam2 for up to 30s")
+def _save_cam2_capture(frame):
+    """Save a Camera-2 frame and update the dashboard capture globals."""
+    global cam2_capture_path, cam2_face_list
+    captures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "detection", "captures")
+    os.makedirs(captures_dir, exist_ok=True)
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(captures_dir, f"cam2_{ts}.jpg")
+    cv2.imwrite(path, frame)
+    with cam2_capture_lock:
+        cam2_capture_path = path
 
 
 def surv_detect_loop(cam_id):
     """
     Low-fps person detection + face recognition on a surveillance camera.
+    Uses YOLO detection with custom IoU-based matching for cross-frame track
+    continuity (avoids sharing YOLO's built-in tracker state across cameras).
+    Per-track face-crop buffer retries identification across frames.
     cam1 → triggers ENTER   cam3 → triggers EXIT pending   cam2 → updates identity timestamps
     """
+    global cam2_face_list
+
+    # Per-camera IoU tracker state
+    SURV_TRACK_BUFFER_SIZE = SURV_TRACK_BUFFER_SIZES.get(cam_id, 6)
+    prev_tracks            = []  # [(box_xyxy_tensor, track_id), ...]
+    surv_track_crops       = {}  # {track_id: [crop_img, ...]}
+    surv_track_ident       = {}  # {track_id: {name, status, confidence}}
+    surv_track_first_seen  = {}  # {track_id: timestamp} — deferred alert
+
     last_face_time = 0
+    # Stagger: each camera starts face rec at different offset (0, 1, 2 sec)
+    time.sleep(cam_id * 0.8)
 
     while running:
         try:
+            _ensure_access_rules()
+
             with surv_locks[cam_id]:
                 frame_bytes = surv_frames.get(cam_id)
 
@@ -563,55 +880,146 @@ def surv_detect_loop(cam_id):
                 time.sleep(SURV_DETECT_INTERVAL)
                 continue
 
-            # Person detection (fast)
-            results = model(img, classes=[0], verbose=False)
-            boxes = [b for b in results[0].boxes if float(b.conf[0]) >= MIN_CONFIDENCE]
+            # Person detection (use model() not track() to avoid corrupting
+            # YOLO cam's built-in tracker state)
+            with model_infer_lock:
+                results = model(img, classes=[0], verbose=False)
+            raw_boxes = [b for b in results[0].boxes if float(b.conf[0]) >= MIN_CONFIDENCE]
 
-            if not boxes:
-                time.sleep(SURV_DETECT_INTERVAL)
-                continue
-
-            # Rate-limit face recognition
+            # Match current detections to previous tracks via IoU
             now = time.time()
-            if now - last_face_time < SURV_FACE_INTERVAL:
+            box_xyxy = [b.xyxy[0] for b in raw_boxes]
+            match = _match_boxes(prev_tracks, box_xyxy)
+            prev_tracks = [(box_xyxy[ci], match[ci]) for ci in sorted(match.keys())]
+
+            track_ids = [match[i] for i in range(len(raw_boxes))]
+
+            # Always buffer frames that contain people (for best-frame selection)
+            if raw_boxes:
+                gray      = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                sharpness = min(cv2.Laplacian(gray, cv2.CV_64F).var() / 300.0, 1.0)
+                max_conf  = max(float(b.conf[0]) for b in raw_boxes)
+                score     = max_conf * 0.6 + sharpness * 0.4
+                with best_frame_locks[cam_id]:
+                    best_frame_buffers[cam_id].append((score, img.copy(), list(raw_boxes)))
+                    if len(best_frame_buffers[cam_id]) > BEST_FRAME_BUFFER_SIZE:
+                        best_frame_buffers[cam_id].pop(0)
+
+            if not raw_boxes:
+                # Cleanup stale tracks
+                surv_track_crops = {tid: buf for tid, buf in surv_track_crops.items()
+                                    if tid in surv_track_ident}
                 time.sleep(SURV_DETECT_INTERVAL)
                 continue
-            last_face_time = now
 
-            for box in boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                margin   = max(10, int((y2 - y1) * 0.08))
-                face_img = img[max(0, y1 - margin):min(img.shape[0], y2),
-                               max(0, x1):min(img.shape[1], x2)]
-                if face_img.size == 0:
+            # ── Per-track face recognition with crop buffer ──
+            identified_any = False
+            final_result   = None
+
+            for tid, box in zip(track_ids, raw_boxes):
+                if tid is None:
+                    continue
+
+                if cam_id in CAM_NO_FACE_RECOGNITION:
+                    # Camera sees only legs/backs (exit cam) — skip face rec
+                    surv_track_ident[tid] = {"name": None, "status": "unknown", "confidence": 0.0}
+                    continue
+
+                # Rate-limit face recognition (check per camera, not per track)
+                if now - last_face_time < SURV_FACE_INTERVAL:
+                    continue
+                last_face_time = now
+
+                # Already identified in this camera session → skip
+                if tid in surv_track_ident:
+                    identified_any = True
+                    final_result   = surv_track_ident[tid]
+                    continue
+
+                # Crop head region
+                face_img, ok = _crop_face_from_box(img, box)
+                if not ok:
                     continue
 
                 result = recognize_face(face_img, access_rules_cache)
-                name   = result.get("name")
-                status = result.get("status", "unknown")
+                r_name   = result.get("name")
+                r_status = result.get("status", "unknown")
 
-                if not name or status == "unknown":
-                    continue
+                if r_name and r_status != "unknown":
+                    surv_track_ident[tid] = result
+                    surv_track_crops.pop(tid, None)
+                    surv_track_first_seen.pop(tid, None)  # cancel deferred alert
+                    identified_any = True
+                    final_result   = result
+                    print(f"👁️  CAM{cam_id} TRACK {tid}: {r_name} ({r_status}) conf={result.get('confidence',0):.2f}")
+                else:
+                    if tid not in surv_track_first_seen:
+                        surv_track_first_seen[tid] = now
 
-                # face_folder lookup from access_rules_cache
+                    # Buffer crop for retry
+                    buf = surv_track_crops.setdefault(tid, [])
+                    buf.append(face_img)
+                    if len(buf) > SURV_TRACK_BUFFER_SIZE:
+                        buf.pop(0)
+
+                    # Retry all buffered crops
+                    for idx, old_crop in enumerate(buf):
+                        result2 = recognize_face(old_crop, access_rules_cache)
+                        n2 = result2.get("name")
+                        s2 = result2.get("status", "unknown")
+                        if n2 and s2 != "unknown":
+                            surv_track_ident[tid] = result2
+                            surv_track_crops.pop(tid, None)
+                            surv_track_first_seen.pop(tid, None)
+                            identified_any = True
+                            final_result   = result2
+                            print(f"👁️  CAM{cam_id} TRACK {tid}: identified via buffer[{idx}] as {n2} ({s2})")
+                            break
+
+            # ── Feed into state machine + deferred unknown alert ──
+            name   = final_result.get("name")   if final_result else None
+            status = final_result.get("status") if final_result else "unknown"
+
+            if not name or status == "unknown":
+                # Deferred unknown alert per-track
+                fire_alert = False
+                for tid, fs in list(surv_track_first_seen.items()):
+                    if now - fs >= UNKNOWN_DEFER_SEC:
+                        fire_alert = True
+                        surv_track_first_seen.pop(tid, None)
+                if fire_alert and cam_id == 1:
+                    update_unknown_sighting(cam_id, img)
+            else:
                 face_folder = next(
                     (r["face_folder"] for r in access_rules_cache if r["name"] == name),
                     name,
                 )
+                conf = final_result.get("confidence", 0.0)
+                print(f"👁️  CAM{cam_id} sees {name} ({status}) conf={conf:.2f}")
 
-                # Update presence timestamp for cam2 confirmation
-                with cam_ident_lock:
-                    cam_identities[cam_id][face_folder] = time.time()
+                if cam_id == 2:
+                    update_sighting(face_folder, name, cam_id, confidence=conf)
+                else:
+                    if _cast_vote(cam_id, face_folder):
+                        update_sighting(face_folder, name, cam_id, confidence=conf)
 
-                print(f"👁️  CAM{cam_id} sees {name} ({status})")
-
-                if cam_id == 1:
-                    handle_entry(name, face_folder)
-                elif cam_id == 3:
-                    handle_exit_trigger(name, face_folder)
+            # Update dashboard face list (cam1 = entry door)
+            if cam_id == 1 and img is not None:
+                threading.Thread(target=_save_cam2_capture,
+                                 args=(img.copy(),), daemon=True).start()
+                now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                with cam2_face_lock:
+                    cam2_face_list = [{
+                        "name":        final_result.get("name") if final_result else None,
+                        "status":      final_result.get("status", "unknown") if final_result else "unknown",
+                        "confidence":  final_result.get("confidence", 0.0) if final_result else 0.0,
+                        "detected_at": now_str,
+                    }]
 
         except Exception as e:
             print(f"❌ SURV DETECT cam{cam_id}: {e}")
+            import traceback
+            traceback.print_exc()
 
         time.sleep(SURV_DETECT_INTERVAL)
 
@@ -668,6 +1076,9 @@ def init_surveillance_cameras():
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 c.set(cv2.CAP_PROP_FPS,          5)
                 c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                # Flush initial DirectShow frames — A4Tech cameras return black frames
+                # for the first ~1 second before AGC/AWB stabilises.
+                _flush_camera(c, n=20)
                 surv_caps[cam_id]   = c
                 surv_online[cam_id] = True
                 t = threading.Thread(target=surv_capture_loop,
@@ -678,6 +1089,8 @@ def init_surveillance_cameras():
                 surv_online[cam_id] = False
                 c.release()
                 print(f"  ⚠️  攝影機 {cam_id} (index {phys_idx}): 未找到 (Offline)")
+            # Stagger camera opens — DirectShow can reject rapid sequential opens
+            time.sleep(0.5)
         except Exception as e:
             surv_online[cam_id] = False
             print(f"  ❌ 攝影機 {cam_id}: Error - {e}")
@@ -848,6 +1261,159 @@ def log_room_event(event_type, name, face_folder, cam_id):
         conn.close()
 
 
+def _save_capture(frame_img, prefix="capture"):
+    """Save a frame to detection/captures/ and return the path, or None."""
+    if frame_img is None:
+        return None
+    try:
+        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{prefix}_{ts}.jpg"
+        path     = os.path.join("detection", "captures", filename)
+        cv2.imwrite(path, frame_img)
+        return path
+    except Exception:
+        return None
+
+
+def update_sighting(face_folder, name, cam_id, confidence=0.0):
+    """Record that cam_id just saw face_folder. Called by all detection loops."""
+    with person_state_lock:
+        if face_folder not in person_state:
+            person_state[face_folder] = {
+                "name":            name,
+                "inside":          False,
+                "entered_at":      None,
+                "last_seen":       {1: 0, 2: 0, 3: 0, 'yolo': 0},
+                "last_confidence": {1: 0.0, 2: 0.0, 3: 0.0, 'yolo': 0.0},
+                "exit_pending":    False,
+                "exit_started_at": 0,
+            }
+        st = person_state[face_folder]
+        st['last_seen'][cam_id]       = time.time()
+        st['last_confidence'][cam_id] = confidence
+        st['name']                    = name
+
+
+def update_unknown_sighting(cam_id, frame_img=None):
+    """Alert once per UNKNOWN_COOLDOWN_SEC per camera when an unknown person is seen."""
+    now = time.time()
+    with unknown_alert_lock:
+        if now - unknown_last_alert.get(cam_id, 0) < UNKNOWN_COOLDOWN_SEC:
+            return
+        unknown_last_alert[cam_id] = now
+
+    img_path  = _save_capture(frame_img, f"unknown_cam{cam_id}")
+    cam_label = {1: "入口", 2: "室內", 3: "出口", 'yolo': "全景"}.get(cam_id, str(cam_id))
+    msg = (f"⚠️ 發現不明人士！\n"
+           f"📷 攝影機: {cam_label}\n"
+           f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n"
+           f"📍 IoT Lab")
+    send_telegram_notification(msg, img_path)
+    print(f"⚠️ UNKNOWN: cam{cam_id} alert sent")
+
+
+def _cast_vote(cam_id, face_folder):
+    """
+    Add one recognition vote for face_folder at cam_id.
+    Returns True when vote count reaches VOTE_REQUIRED within VOTE_WINDOW_SEC.
+    Only used for cam1 and cam3 (cam2 updates presence immediately).
+    """
+    now = time.time()
+    with _vote_lock:
+        bucket = _vote_records.setdefault(cam_id, {})
+        timestamps = [t for t in bucket.get(face_folder, [])
+                      if now - t < VOTE_WINDOW_SEC]
+        timestamps.append(now)
+        bucket[face_folder] = timestamps
+        count = len(timestamps)
+    print(f"🗳️  CAM{cam_id} vote: {face_folder} = {count}/{VOTE_REQUIRED}")
+    return count >= VOTE_REQUIRED
+
+
+def _do_notify_enter(name, face_folder):
+    ts  = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    msg = f"✅ {name} 進入實驗室\n🕐 {ts}\n📍 IoT Lab"
+    send_telegram_notification(msg)
+    log_room_event("ENTER", name, face_folder, 1)
+    print(f"🚪 ENTER logged: {name}")
+
+
+def _do_notify_exit(name, face_folder, duration_sec):
+    ts   = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    mins = int(duration_sec // 60)
+    msg  = (f"🚶 {name} 離開實驗室\n"
+            f"🕐 {ts}\n"
+            f"⏱ 停留 {mins} 分鐘\n"
+            f"📍 IoT Lab")
+    send_telegram_notification(msg)
+    log_room_event("EXIT", name, face_folder, 3)
+    print(f"🚪 EXIT logged: {name} (duration {mins} min)")
+
+
+def unified_state_machine():
+    """
+    Background thread: sole decision-maker for ENTER/EXIT events.
+
+    ENTER logic  — cross-camera confirmation:
+      Cam1 (door) + Cam2 (inside) both see same person within ENTRY_WINDOW_SEC
+      → eliminates false positives from anyone just passing by
+
+    EXIT logic  — YOLO-based with Cam3 trigger:
+      Cam3 (exit) sees person  →  start exit watch
+      YOLO (wide angle) loses sight  →  EXIT confirmed
+      If Cam3 can't identify  →  use identity stored in person_state (known at ENTER)
+    """
+    while running:
+        now = time.time()
+        with person_state_lock:
+            for face_folder, state in list(person_state.items()):
+                cam1      = now - state['last_seen'].get(1,      0) < ENTRY_WINDOW_SEC
+                cam2      = now - state['last_seen'].get(2,      0) < ENTRY_WINDOW_SEC
+                cam3      = now - state['last_seen'].get(3,      0) < EXIT_WINDOW_SEC
+                yolo_seen = now - state['last_seen'].get('yolo', 0) < PRESENCE_WINDOW_SEC
+
+                # ── ENTER: cross-confirm Cam1+Cam2, or Cam2 alone if very confident ──
+                if not state['inside']:
+                    cam2_conf  = state.get('last_confidence', {}).get(2, 0.0)
+                    cam2_solo  = cam2 and cam2_conf >= CAM2_SOLO_CONFIDENCE
+                    cross_conf = cam1 and cam2  # both cameras agree
+                    if cam2_solo or cross_conf:
+                        state['inside']       = True
+                        state['entered_at']   = datetime.now()
+                        state['exit_pending'] = False
+                        name   = state['name']
+                        reason = f"cam2 solo conf={cam2_conf:.2f}" if cam2_solo else "cam1+cam2"
+                        print(f"🚪 ENTER trigger: {name} ({reason})")
+                        threading.Thread(target=_do_notify_enter,
+                                         args=(name, face_folder), daemon=True).start()
+
+                # ── EXIT: Cam3 triggers, YOLO confirms departure ──────────
+                else:
+                    # Cam3 sees person near exit → start exit watch
+                    if cam3 and not state['exit_pending']:
+                        state['exit_pending']    = True
+                        state['exit_started_at'] = now
+
+                    if state['exit_pending']:
+                        waited = now - state['exit_started_at']
+                        # YOLO (wide-angle room view) no longer sees them
+                        # = they have physically left the room
+                        yolo_gone = not yolo_seen
+                        if (yolo_gone and waited >= EXIT_CONFIRM_DELAY_SEC) \
+                                or waited > EXIT_MAX_WAIT_SEC:
+                            dur  = (datetime.now() - state['entered_at']).total_seconds() \
+                                   if state['entered_at'] else 0
+                            name = state['name']  # identity from ENTER (reliable fallback)
+                            state['inside']          = False
+                            state['entered_at']      = None
+                            state['exit_pending']    = False
+                            state['exit_started_at'] = 0
+                            threading.Thread(target=_do_notify_exit,
+                                             args=(name, face_folder, dur), daemon=True).start()
+
+        time.sleep(1)
+
+
 def init_authorized_personnel_table():
     connection = get_db_connection()
     try:
@@ -1011,10 +1577,16 @@ def get_detection_stats():
 @app.route('/api/room/status')
 @login_required
 def get_room_status():
-    with room_lock:
+    with person_state_lock:
         occupants = [
-            {"face_folder": k, "name": v["name"], "entered_at": v["entered_at"]}
-            for k, v in room_occupants.items()
+            {
+                "face_folder": ff,
+                "name":        st["name"],
+                "entered_at":  st["entered_at"].strftime("%Y-%m-%d %H:%M:%S")
+                               if st.get("entered_at") else None,
+            }
+            for ff, st in person_state.items()
+            if st.get("inside")
         ]
     return jsonify({"count": len(occupants), "occupants": occupants})
 
@@ -1039,12 +1611,48 @@ def get_room_events():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/face-photo/<face_folder>')
+@login_required
+def get_face_photo_by_folder(face_folder):
+    """Serve the first available face photo for a given face_folder slug."""
+    import re
+    if not re.match(r'^[\w\-]+$', face_folder):
+        return jsonify({"error": "invalid"}), 400
+    path = get_first_photo_path(face_folder)
+    if path and os.path.isfile(path):
+        return send_file(path, mimetype='image/jpeg')
+    return jsonify({"error": "no photo"}), 404
+
+
+@app.route('/api/unknown-alerts')
+@login_required
+def get_unknown_alerts():
+    """Return list of unknown-person captures from 攝影機 2 (cam1), newest first."""
+    import glob as _glob
+    captures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "detection", "captures")
+    files = sorted(
+        _glob.glob(os.path.join(captures_dir, "unknown_cam1_*.jpg")),
+        key=os.path.getmtime, reverse=True
+    )[:50]
+    results = []
+    for f in files:
+        fname = os.path.basename(f)
+        mtime = os.path.getmtime(f)
+        results.append({
+            "filename": fname,
+            "url":      f"/detection-image/{fname}",
+            "time":     datetime.fromtimestamp(mtime).strftime("%Y/%m/%d %H:%M:%S"),
+        })
+    return jsonify({"alerts": results})
+
+
 @app.route('/api/room/history')
 @login_required
 def get_room_history():
     try:
         page     = max(1, int(request.args.get('page', 1)))
-        per_page = 20
+        per_page = min(int(request.args.get('per_page', 20)), 50)
         offset   = (page - 1) * per_page
         search   = request.args.get('search', '').strip()
         date_from = request.args.get('date_from', '')
@@ -1076,7 +1684,14 @@ def get_room_history():
                     DATE_FORMAT(e.timestamp, '%%Y/%%m/%%d %%H:%%i:%%S')         AS entered_at,
                     x.cam_id                                                     AS exit_cam,
                     DATE_FORMAT(x.timestamp, '%%Y/%%m/%%d %%H:%%i:%%S')         AS exited_at,
-                    TIMESTAMPDIFF(MINUTE, e.timestamp, x.timestamp)              AS duration_min
+                    TIMESTAMPDIFF(MINUTE, e.timestamp, x.timestamp)              AS duration_min,
+                    (
+                        SELECT dl.image_filename FROM detection_logs dl
+                        WHERE dl.timestamp >= e.timestamp - INTERVAL 5 SECOND
+                          AND dl.timestamp <= e.timestamp + INTERVAL 15 SECOND
+                        ORDER BY ABS(TIMESTAMPDIFF(SECOND, e.timestamp, dl.timestamp))
+                        LIMIT 1
+                    )                                                            AS image_filename
                 FROM room_events e
                 LEFT JOIN room_events x
                     ON  x.face_folder  = e.face_folder
@@ -1092,6 +1707,9 @@ def get_room_history():
                 LIMIT %s OFFSET %s
             """, params + [per_page, offset])
             rows = cur.fetchall()
+            for r in rows:
+                fn = r.get("image_filename")
+                r["image_url"] = f"/detection-image/{fn}" if fn else None
         conn.close()
 
         return jsonify({
@@ -1108,15 +1726,12 @@ def get_room_history():
 @app.route('/api/face/latest')
 @login_required
 def get_latest_face():
-    import glob as _glob
-    with latest_face_lock:
-        people = list(latest_face_list)
-
-    def _ts(v):
-        if v is None: return "-"
-        if isinstance(v, str): return str(v)[:5]
-        total = int(v.total_seconds())
-        return f"{total//3600:02d}:{(total%3600)//60:02d}"
+    # Prefer Camera-2 results; fall back to YOLO recognition
+    with cam2_face_lock:
+        people = list(cam2_face_list) if cam2_face_list else []
+    if not people:
+        with latest_face_lock:
+            people = list(latest_face_list)
 
     enriched = []
     for p in people:
@@ -1135,28 +1750,27 @@ def get_latest_face():
                 if row:
                     item["employee_id"]  = row.get("employee_id") or "-"
                     item["role"]         = row.get("role") or "-"
-                    item["access_start"] = _ts(row.get("access_start"))
-                    item["access_end"]   = _ts(row.get("access_end"))
+                    item["access_start"] = _ts_fmt(row.get("access_start"))
+                    item["access_end"]   = _ts_fmt(row.get("access_end"))
             except Exception:
                 pass
         enriched.append(item)
 
-    captures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "detection", "captures")
-    captures = sorted(_glob.glob(os.path.join(captures_dir, "*.jpg")), key=os.path.getmtime, reverse=True)
+    with cam2_capture_lock:
+        has_cam2 = cam2_capture_path is not None
     return jsonify({
         "people":      enriched,
-        "capture_url": "/api/face/latest/capture" if captures else None,
+        "capture_url": "/api/face/latest/capture" if has_cam2 else None,
     })
 
 @app.route('/api/face/latest/capture')
 @login_required
 def get_latest_capture():
-    import glob as _glob
-    captures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "detection", "captures")
-    captures = sorted(_glob.glob(os.path.join(captures_dir, "*.jpg")), key=os.path.getmtime, reverse=True)
-    if captures:
-        return send_file(captures[0])
-    return jsonify({"error": "No captures"}), 404
+    with cam2_capture_lock:
+        path = cam2_capture_path
+    if path and os.path.isfile(path):
+        return send_file(path, mimetype='image/jpeg')
+    return jsonify({"error": "No cam2 capture yet"}), 404
 
 @app.route('/api/sensor-data/tank/<int:tank_id>')
 @login_required
@@ -1223,6 +1837,8 @@ def init_system():
         init_users_table()
         init_authorized_personnel_table()
         init_room_tables()
+        _ensure_access_rules()
+        _restore_person_state()
         init_yolo_camera()
         init_surveillance_cameras()
         t = threading.Thread(target=face_recognition_loop, daemon=True)
@@ -1232,6 +1848,12 @@ def init_system():
             t2 = threading.Thread(target=surv_detect_loop, args=(cid,), daemon=True)
             t2.start()
             print(f"✅ ROOM DETECT: cam{cid} thread started")
+        t3 = threading.Thread(target=unified_state_machine, daemon=True)
+        t3.start()
+        print("✅ STATE MACHINE: unified access control thread started")
+        t4 = threading.Thread(target=cleanup_old_captures, daemon=True)
+        t4.start()
+        print("✅ CLEANUP: capture cleanup thread started")
         return True
     except Exception as e:
         print(f"❌ SYSTEM: 初始化失敗 - {e}")
@@ -1255,17 +1877,11 @@ def get_personnel():
             )
             rows = cur.fetchall()
 
-        def _ts(val):
-            if val is None: return "00:00"
-            if isinstance(val, str): return str(val)[:5]
-            total = int(val.total_seconds())
-            return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
-
         result = []
         for r in rows:
             folder = r.get("face_folder", "")
-            r["access_start"] = _ts(r.get("access_start"))
-            r["access_end"]   = _ts(r.get("access_end"))
+            r["access_start"] = _ts_fmt(r.get("access_start"))
+            r["access_end"]   = _ts_fmt(r.get("access_end"))
             r["is_active"]    = bool(r.get("is_active"))
             photos            = list_face_photos(folder) if folder else []
             r["has_face"]     = len(photos) > 0
