@@ -2,6 +2,7 @@ import os
 import glob
 import shutil
 import threading
+import time
 import numpy as np
 import cv2
 from datetime import datetime
@@ -16,6 +17,15 @@ MIN_FACE_SIZE_PX      = 30     # hard cutoff: face smaller than this → reject 
 SOFT_SIZE_THRESHOLD   = 50     # face between 30-50 px → apply size penalty to threshold
 HIGH_CONF_THRESHOLD   = 0.35   # distance below this → skip margin check (confident match)
 MIN_INTERCLASS_MARGIN = 0.08   # 2nd-best must be this much worse → reject ambiguous
+
+# Per-camera recognition profiles — tune thresholds per camera position
+# cam_id: 0=YOLO cam, 1=cam1, 2=cam2 (primary), 3=cam3 (no face rec normally)
+CAM_PROFILE = {
+    0: {"min_size": 28, "sim_thresh": 0.55, "quality": 0.42},   # YOLO cam — overview, relax min_size for far faces
+    1: {"min_size": 25, "sim_thresh": 0.55, "quality": 0.40},   # cam1 — entrance door, relaxed for distance
+    2: {"min_size": 28, "sim_thresh": 0.50, "quality": 0.45},   # cam2 — face cam, lowered to match actual working distance
+    3: {"min_size": 25, "sim_thresh": 0.58, "quality": 0.40},   # cam3 — exit corner, lenient
+}
 
 _app = None
 _app_lock = threading.Lock()
@@ -63,12 +73,14 @@ def _build_db():
     """Read every photo in faces_db, extract ArcFace embeddings, cache in memory."""
     global _db, _db_ready
     import cv2
+    t0 = time.time()
 
     new_db = {}
     if not os.path.exists(FACES_DB):
         print(f"⚠️ FACE DB: {FACES_DB} not found")
         return
 
+    print(f"🔄 FACE DB: rebuilding embedding cache from {FACES_DB} ...")
     app = _get_app()
 
     for folder in os.listdir(FACES_DB):
@@ -110,23 +122,33 @@ def _build_db():
     with _db_lock:
         _db = new_db
         _db_ready = True
-    print(f"✅ FACE DB: ready — {len(new_db)} person(s)")
+    print(f"✅ FACE DB: ready — {len(new_db)} person(s), {sum(len(v) for v in new_db.values())} embeddings, took {time.time()-t0:.2f}s")
 
 
 def _ensure_db():
     if not _db_ready:
+        print(f"⏳ FACE DB: cache miss — triggering rebuild")
         _build_db()
 
 
-def recognize_face(img_array, access_rules=None):
+def recognize_face(img_array, access_rules=None, cam_id=None):
     """
     Identify the person in img_array (BGR numpy array) using ArcFace embeddings.
+    Uses per-camera profile (CAM_PROFILE) if cam_id is provided.
     Returns: {name, status, confidence}
       status: 'authorized' | 'unauthorized' | 'unknown'
     """
+    tag = f"[cam{cam_id}]" if cam_id is not None else "[cam?]"
+    t0 = time.time()
     try:
         _ensure_db()
         app = _get_app()
+
+        # Select per-camera thresholds, fall back to defaults
+        profile = CAM_PROFILE.get(cam_id, {})
+        min_quality   = profile.get("quality",   MIN_FACE_QUALITY)
+        min_size      = profile.get("min_size",  MIN_FACE_SIZE_PX)
+        sim_thresh    = profile.get("sim_thresh", SIMILARITY_THRESHOLD)
 
         # Layer 1: lighting normalisation before detection
         preprocessed = _normalize_lighting(img_array)
@@ -135,62 +157,68 @@ def recognize_face(img_array, access_rules=None):
             faces = app.get(preprocessed)
 
         if not faces:
-            print("⚠️ FACE: no face detected")
+            print(f"⚠️ FACE{tag}: no face detected")
             return _unknown()
 
         face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
 
-        # Layer 2: face quality gate (det_score = InsightFace confidence in detection)
-        if face.det_score < MIN_FACE_QUALITY:
-            print(f"⚠️ FACE: low quality det_score={face.det_score:.2f} < {MIN_FACE_QUALITY}")
+        # Layer 2: face quality gate (per-camera threshold)
+        if face.det_score < min_quality:
+            print(f"⚠️ FACE{tag}: low quality det_score={face.det_score:.2f} < {min_quality}")
             return _unknown()
 
-        # Layer 3: face size gate (soft penalty zone)
+        # Layer 3: face size gate (soft penalty zone, per-camera min_size)
         fw = face.bbox[2] - face.bbox[0]
         fh = face.bbox[3] - face.bbox[1]
-        if fw < MIN_FACE_SIZE_PX or fh < MIN_FACE_SIZE_PX:
-            print(f"⚠️ FACE: too small ({fw:.0f}×{fh:.0f}px < {MIN_FACE_SIZE_PX}px)")
+        if fw < min_size or fh < min_size:
+            print(f"⚠️ FACE{tag}: too small ({fw:.0f}×{fh:.0f}px < {min_size}px)")
             return _unknown()
         size_penalty = 0.0
         if fw < SOFT_SIZE_THRESHOLD or fh < SOFT_SIZE_THRESHOLD:
             ratio = min(fw, fh) / SOFT_SIZE_THRESHOLD
             size_penalty = (1.0 - ratio) * 0.08
-            print(f"📐 FACE: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px)")
-        effective_threshold = SIMILARITY_THRESHOLD + size_penalty
+            print(f"📐 FACE{tag}: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px)")
+        effective_threshold = sim_thresh + size_penalty
 
         emb = face.embedding.copy().astype(np.float32)
         emb /= np.linalg.norm(emb)
 
-        best_folder  = None
-        best_dist    = float("inf")
-        second_dist  = float("inf")
+        best_folder   = None
+        second_folder = None
+        best_dist     = float("inf")
+        second_dist   = float("inf")
 
         with _db_lock:
             db_snapshot = {k: list(v) for k, v in _db.items()}
 
+        db_size = sum(len(v) for v in db_snapshot.values())
         for folder_name, embeddings in db_snapshot.items():
             for db_emb in embeddings:
                 dist = 1.0 - float(np.dot(emb, db_emb))
                 if dist < best_dist:
-                    second_dist = best_dist
-                    best_dist   = dist
-                    best_folder = folder_name
+                    second_dist   = best_dist
+                    second_folder = best_folder
+                    best_dist     = dist
+                    best_folder   = folder_name
                 elif dist < second_dist:
-                    second_dist = dist
+                    second_dist   = dist
+                    second_folder = folder_name
 
-        print(f"🔬 FACE DIST: best={best_dist:.3f} 2nd={second_dist:.3f} → {best_folder}")
+        duration = time.time() - t0
+        print(f"🔬 FACE{tag}: best={best_dist:.3f}({best_folder}) 2nd={second_dist:.3f}({second_folder}) | db={db_size} embs | thresh={effective_threshold:.3f} | took={duration:.3f}s")
 
         if best_dist > effective_threshold or best_folder is None:
             return _unknown()
 
-        # Layer 4: inter-class margin — skip if match is very confident
-        if best_dist < HIGH_CONF_THRESHOLD:
-            print(f"✅ FACE: high-confidence match dist={best_dist:.3f}, skip margin check")
+        # Layer 4: inter-class margin
+        # Skip if: very confident, OR both closest are embeddings of the same person
+        if best_dist < HIGH_CONF_THRESHOLD or best_folder == second_folder:
+            print(f"✅ FACE{tag}: match dist={best_dist:.3f}, skip margin check (reason={'high-conf' if best_dist < HIGH_CONF_THRESHOLD else 'same-person'})")
         else:
             if second_dist < float("inf"):
                 margin = second_dist - best_dist
                 if margin < MIN_INTERCLASS_MARGIN:
-                    print(f"⚠️ FACE: ambiguous (margin={margin:.3f} < {MIN_INTERCLASS_MARGIN})")
+                    print(f"⚠️ FACE{tag}: ambiguous (margin={margin:.3f} < {MIN_INTERCLASS_MARGIN})")
                     return _unknown()
 
         confidence = round(1.0 - best_dist, 2)
@@ -212,7 +240,8 @@ def recognize_face(img_array, access_rules=None):
         return {"name": best_folder, "status": "authorized", "confidence": confidence}
 
     except Exception as e:
-        print(f"❌ FACE RECOGNITION: {e}")
+        duration = time.time() - t0
+        print(f"❌ FACE{tag}: ERROR after {duration:.3f}s — {e}")
         return _unknown()
 
 
@@ -278,3 +307,67 @@ def delete_face_folder(face_folder):
     if os.path.exists(folder_path):
         shutil.rmtree(folder_path)
     clear_face_cache()
+
+
+def analyze_face_for_guide(img_array):
+    """
+    Detect face position/size and return guidance for the capture preview.
+    Returns dict with bbox, guidance text, and a ready flag.
+    """
+    try:
+        app = _get_app()
+        preprocessed = _normalize_lighting(img_array)
+        with face_lock:
+            faces = app.get(preprocessed)
+
+        h, w = img_array.shape[:2]
+        if not faces:
+            return {"detected": False, "guidance": "未檢測到人臉，請靠近鏡頭", "ready": False, "bbox": None}
+
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        x1, y1, x2, y2 = map(int, face.bbox)
+        fw = x2 - x1
+        fh = y2 - y1
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        face_size = min(fw, fh)
+        quality = face.det_score
+
+        target_min = 45
+        target_max = 80
+        margin_x = w * 0.15
+        margin_y = h * 0.10
+
+        if face_size < target_min:
+            guidance = "請靠近鏡頭"
+            ready = False
+        elif face_size > target_max:
+            guidance = "請遠離鏡頭"
+            ready = False
+        elif cx < margin_x:
+            guidance = "請向右移動"
+            ready = False
+        elif cx > w - margin_x:
+            guidance = "請向左移動"
+            ready = False
+        elif cy < margin_y:
+            guidance = "請向下移動"
+            ready = False
+        elif cy > h - margin_y:
+            guidance = "請向上移動"
+            ready = False
+        else:
+            guidance = "位置合適 ✓"
+            ready = True
+
+        return {
+            "detected": True,
+            "guidance": guidance,
+            "ready": ready,
+            "bbox": (x1, y1, x2, y2),
+            "center": (cx, cy),
+            "size": (fw, fh),
+            "quality": float(quality),
+        }
+    except Exception as e:
+        return {"detected": False, "guidance": f"分析錯誤: {e}", "ready": False, "bbox": None}

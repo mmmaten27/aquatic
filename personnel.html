@@ -76,6 +76,38 @@
         .fade-in { animation: fadeIn 0.2s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         input[type="time"]::-webkit-calendar-picker-indicator { filter: none; opacity: 0.6; }
+
+        @media (max-width: 639px) {
+            .stats-card { padding: 0.75rem; }
+            .stats-card .text-4xl { font-size: 1.75rem; }
+            #personnel-tbody tr {
+                display: block;
+                padding: 0.75rem;
+                border-bottom: 1px solid rgba(148,163,184,0.2);
+            }
+            .overflow-x-auto thead { display: none; }
+            #personnel-tbody tr td:not([class*="hidden"]) {
+                display: inline-flex;
+                align-items: center;
+                padding: 0.25rem 0.375rem !important;
+                border: none;
+            }
+            #personnel-tbody tr td:nth-child(1):not([class*="hidden"]) { float: left; margin-right: 0.5rem; }
+            #personnel-tbody tr td:nth-child(2):not([class*="hidden"]) { float: none; font-size: 0.875rem; }
+            #personnel-tbody tr td:nth-child(6):not([class*="hidden"]) { clear: both; display: block; text-align: left !important; padding-left: 0 !important; margin-top: 0.25rem; }
+            #personnel-tbody tr td:nth-child(7):not([class*="hidden"]) { float: right; margin-top: -2.25rem; }
+            #personnel-tbody tr[data-search] { display: block; }
+            #personnel-tbody tr[data-search][style*="none"] { display: none !important; }
+        }
+        @media (max-width: 480px) {
+            .modal-content .grid-cols-2 { grid-template-columns: 1fr; }
+            #personnel-tbody tr td:nth-child(6) { margin-top: 0.5rem; }
+            .glass-card { border-radius: 1rem; }
+            #personnel-tbody tr { padding: 0.625rem; }
+        }
+        @media (min-width: 640px) and (max-width: 1023px) {
+            #personnel-tbody tr td { padding: 0.75rem 0.625rem; }
+        }
     </style>
 </head>
 <body class="min-h-screen text-slate-800">
@@ -106,71 +138,105 @@
     </div>
 
     <!-- Header -->
-    <header class="glass-header border-b border-white/30 px-6 py-4 sticky top-0 z-20">
-        <div class="max-w-6xl mx-auto flex items-center justify-between">
-            <div class="flex items-center gap-4">
-                <a href="/" class="flex items-center gap-2 text-cyan-600 hover:text-cyan-700 transition-colors text-sm font-medium">
-                    <i class="fas fa-arrow-left"></i>返回儀表板
+    <header class="glass-header border-b border-white/30 px-3 sm:px-6 py-3 sm:py-4 sticky top-0 z-20">
+        <div class="max-w-6xl mx-auto flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 sm:gap-4 min-w-0">
+                <a href="/" class="flex items-center gap-1.5 text-cyan-600 hover:text-cyan-700 transition-colors text-sm font-medium shrink-0">
+                    <i class="fas fa-arrow-left"></i><span class="hidden sm:inline">返回儀表板</span>
                 </a>
-                <div class="w-px h-5 bg-slate-300"></div>
-                <div class="flex items-center gap-2">
-                    <i class="fas fa-user-shield text-cyan-600"></i>
-                    <span class="font-bold text-slate-800">人員管制管理</span>
-                    <span class="text-slate-400 text-sm font-normal hidden sm:inline">Personnel Access Control</span>
-                </div>
+                <div class="w-px h-5 bg-slate-300 shrink-0"></div>
+                <div class="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                    <i class="fas fa-user-shield text-cyan-600 shrink-0"></i>
+                    <span class="font-bold text-slate-800 text-sm sm:text-base truncate">人員管制管理</span>
+            <span class="text-slate-400 text-xs sm:text-sm font-normal hidden sm:inline">Personnel Access Control</span>
             </div>
-            <button onclick="openAddModal()"
-                    class="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 active:bg-cyan-800 text-white px-4 py-2 rounded-xl font-semibold transition-colors text-sm shadow-sm">
-                <i class="fas fa-user-plus"></i>新增人員
-            </button>
+        </div>
         </div>
     </header>
 
-    <main class="max-w-6xl mx-auto px-6 py-8 space-y-6">
+    <!-- ─── Capture Preview Modal ─── -->
+    <div id="capture-preview-modal" class="fixed inset-0 modal-overlay hidden z-[60] flex items-center justify-center p-2 sm:p-4">
+        <div class="glass-card w-full max-w-md p-4 sm:p-5 fade-in modal-content rounded-xl sm:rounded-[1.5rem]">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-base sm:text-lg font-bold text-slate-800">拍照預覽 — <span id="preview-cam-label">攝影機 1</span></h3>
+                <button onclick="closeCapturePreview()"
+                        class="text-slate-400 hover:text-slate-600 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-xl hover:bg-slate-100 transition-colors">&times;</button>
+            </div>
+
+            <div class="relative rounded-xl overflow-hidden bg-slate-900 aspect-video flex items-center justify-center mb-3">
+                <img id="preview-guide-img" src="" alt="" class="w-full h-full object-contain">
+                <div id="preview-loading" class="absolute inset-0 flex items-center justify-center bg-slate-900/70">
+                    <i class="fas fa-spinner fa-spin text-white text-2xl"></i>
+                </div>
+            </div>
+
+            <div id="preview-status" class="text-center text-sm font-semibold mb-3">
+                <span class="text-slate-400">กำลัง分析...</span>
+            </div>
+
+            <div class="flex gap-2 sm:gap-3">
+                <button onclick="closeCapturePreview()"
+                        class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm">
+                    取消
+                </button>
+                <button id="preview-capture-btn" onclick="confirmCapture()" disabled
+                        class="flex-1 bg-cyan-600/40 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm">
+                    拍照
+                </button>
+            </div>
+        </div>
+    </div>
+    <main class="max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-8 space-y-4 sm:space-y-6">
 
         <!-- Stats -->
-        <div class="grid grid-cols-3 gap-4">
-            <div class="glass-card p-5 text-center">
-                <div class="text-4xl font-black text-cyan-600 mb-1" id="stat-total">—</div>
-                <div class="text-slate-500 text-sm font-medium">總人員數</div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+            <div class="glass-card p-4 sm:p-5 text-center stats-card">
+                <div class="text-3xl sm:text-4xl font-black text-cyan-600 mb-1" id="stat-total">—</div>
+                <div class="text-slate-500 text-xs sm:text-sm font-medium">總人員數</div>
             </div>
-            <div class="glass-card p-5 text-center">
-                <div class="text-4xl font-black text-green-600 mb-1" id="stat-active">—</div>
-                <div class="text-slate-500 text-sm font-medium">啟用授權</div>
+            <div class="glass-card p-4 sm:p-5 text-center stats-card">
+                <div class="text-3xl sm:text-4xl font-black text-green-600 mb-1" id="stat-active">—</div>
+                <div class="text-slate-500 text-xs sm:text-sm font-medium">啟用授權</div>
             </div>
-            <div class="glass-card p-5 text-center">
-                <div class="text-4xl font-black text-red-500 mb-1" id="stat-inactive">—</div>
-                <div class="text-slate-500 text-sm font-medium">已停用</div>
+            <div class="glass-card p-4 sm:p-5 text-center stats-card">
+                <div class="text-3xl sm:text-4xl font-black text-red-500 mb-1" id="stat-inactive">—</div>
+                <div class="text-slate-500 text-xs sm:text-sm font-medium">已停用</div>
             </div>
         </div>
 
         <!-- Table Card -->
         <div class="glass-card overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
-                <h2 class="font-bold text-slate-800 flex items-center gap-2">
+            <div class="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                <h2 class="font-bold text-slate-800 flex items-center gap-2 text-sm sm:text-base">
                     <i class="fas fa-list text-cyan-600 text-sm"></i>授權人員列表
                 </h2>
-                <input type="text" id="search-input" placeholder="搜尋姓名 / 編號..."
-                       oninput="filterTable(this.value)"
-                       class="bg-white/60 border border-slate-200 rounded-xl px-3 py-1.5 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 w-52 transition-all">
+                <div class="flex items-center gap-2">
+                    <button onclick="openAddModal()"
+                            class="bg-cyan-600 hover:bg-cyan-700 text-white text-xs sm:text-sm font-semibold px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl transition-colors shadow-sm whitespace-nowrap">
+                        <i class="fas fa-plus"></i> <span class="hidden sm:inline">新增人員</span><span class="sm:hidden">新增</span>
+                    </button>
+                    <input type="text" id="search-input" placeholder="搜尋姓名 / 編號..."
+                           oninput="filterTable(this.value)"
+                           class="bg-white/60 border border-slate-200 rounded-xl px-3 py-1.5 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 w-28 sm:w-52 transition-all">
+                </div>
             </div>
 
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead>
                         <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider border-b border-slate-100">
-                            <th class="px-5 py-3 text-left font-semibold">照片</th>
-                            <th class="px-5 py-3 text-left font-semibold">姓名</th>
-                            <th class="px-5 py-3 text-left font-semibold">員工編號</th>
-                            <th class="px-5 py-3 text-left font-semibold">職位</th>
-                            <th class="px-5 py-3 text-left font-semibold">授權時段</th>
-                            <th class="px-5 py-3 text-center font-semibold">狀態</th>
-                            <th class="px-5 py-3 text-center font-semibold">操作</th>
+                            <th class="px-3 sm:px-5 py-3 text-left font-semibold">照片</th>
+                            <th class="px-3 sm:px-5 py-3 text-left font-semibold">姓名</th>
+                            <th class="px-3 sm:px-5 py-3 text-left font-semibold hidden sm:table-cell">員工編號</th>
+                            <th class="px-3 sm:px-5 py-3 text-left font-semibold hidden sm:table-cell">職位</th>
+                            <th class="px-3 sm:px-5 py-3 text-left font-semibold hidden md:table-cell">授權時段</th>
+                            <th class="px-3 sm:px-5 py-3 text-center font-semibold">狀態</th>
+                            <th class="px-3 sm:px-5 py-3 text-center font-semibold">操作</th>
                         </tr>
                     </thead>
                     <tbody id="personnel-tbody">
                         <tr>
-                            <td colspan="7" class="px-5 py-12 text-center text-slate-400">
+                            <td colspan="7" class="px-3 sm:px-5 py-8 sm:py-12 text-center text-slate-400">
                                 <i class="fas fa-spinner fa-spin text-xl mb-3 block text-cyan-400"></i>載入中...
                             </td>
                         </tr>
@@ -181,97 +247,123 @@
     </main>
 
     <!-- ─── Add / Edit Modal ─── -->
-    <div id="modal" class="fixed inset-0 modal-overlay hidden z-50 flex items-center justify-center p-4">
-        <div class="glass-card w-full max-w-md p-6 fade-in">
+    <div id="modal" class="fixed inset-0 modal-overlay hidden z-50 flex items-start sm:items-center justify-center overflow-y-auto">
+        <div class="glass-card w-full max-w-md m-2 sm:m-4 p-4 sm:p-6 fade-in modal-content rounded-xl sm:rounded-[1.5rem]">
 
-            <div class="flex items-center justify-between mb-5">
-                <h3 class="text-lg font-bold text-slate-800" id="modal-title">新增人員</h3>
+            <div class="flex items-center justify-between mb-4 sm:mb-5">
+                <h3 class="text-base sm:text-lg font-bold text-slate-800" id="modal-title">新增人員</h3>
                 <button onclick="closeModal()"
-                        class="text-slate-400 hover:text-slate-600 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-xl hover:bg-slate-100 transition-colors">&times;</button>
+                        class="text-slate-400 hover:text-slate-600 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-xl hover:bg-slate-100 transition-colors shrink-0">&times;</button>
             </div>
 
             <form id="personnel-form" onsubmit="submitForm(event)">
                 <input type="hidden" id="edit-id">
 
                 <!-- Photo upload -->
-                <div class="mb-4 space-y-3">
-                    <div class="flex items-center justify-between">
+                <div class="mb-3 sm:mb-4 space-y-2 sm:space-y-3">
+                    <div class="flex items-center justify-between gap-2">
                         <label class="text-xs text-slate-500 font-semibold uppercase tracking-wide">人臉照片</label>
-                        <span class="text-xs text-slate-400">建議 3–5 張，不同角度</span>
+                        <span class="text-[10px] sm:text-xs text-slate-400 text-right">建議 3–5 張，不同角度</span>
                     </div>
+                    <p class="text-[10px] sm:text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 leading-relaxed">
+                        <i class="fas fa-lightbulb mr-1"></i> 請上傳清晰、正面、光線充足的照片。<br class="hidden sm:inline"> 系統已針對實際距離調校，使用「選擇攝影機拍照」時於正常站立位置拍攝即可。
+                    </p>
 
                     <!-- Existing photos (edit mode) -->
                     <div id="existing-photos-section" class="hidden">
-                        <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center justify-between mb-1.5 sm:mb-2">
                             <span class="text-xs text-slate-500">
                                 已登錄 <span id="existing-count" class="text-slate-700 font-bold">0</span> 張
                             </span>
-                            <span class="text-xs text-slate-400">移到照片上可刪除</span>
+                            <span class="text-[10px] sm:text-xs text-slate-400">移到照片上可刪除</span>
                         </div>
-                        <div id="existing-photos-grid" class="flex flex-wrap gap-2"></div>
+                        <div id="existing-photos-grid" class="flex flex-wrap gap-1.5 sm:gap-2"></div>
                     </div>
 
                     <!-- Upload zone -->
-                    <div class="upload-zone p-4 text-center"
+                    <div class="upload-zone p-3 sm:p-4 text-center"
                          onclick="document.getElementById('face-input').click()"
                          ondragover="event.preventDefault()"
                          ondrop="handleDrop(event)">
-                        <i class="fas fa-images text-2xl text-slate-400 mb-1 block"></i>
-                        <p class="text-slate-500 text-sm">點擊或拖拽照片到此處</p>
-                        <p class="text-slate-400 text-xs mt-0.5">可一次選多張 · JPG / PNG</p>
+                        <i class="fas fa-images text-xl sm:text-2xl text-slate-400 mb-1 block"></i>
+                        <p class="text-slate-500 text-xs sm:text-sm">點擊或拖拽照片到此處</p>
+                        <p class="text-slate-400 text-[10px] sm:text-xs mt-0.5">可一次選多張 · JPG / PNG</p>
                         <input type="file" id="face-input" accept="image/*" multiple
                                class="hidden" onchange="handleFileSelect(this)">
                     </div>
 
+                    <div class="mt-1.5 sm:mt-2 space-y-1.5">
+                        <label class="text-xs text-slate-500 font-semibold uppercase tracking-wide">選擇攝影機拍照</label>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                            <button type="button" onclick="openCapturePreview('yolo')"
+                                    style="background:#6366f1;color:white;padding:8px 0;border:none;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s">
+                                <i class="fas fa-camera"></i> 攝影機 1
+                            </button>
+                            <button type="button" onclick="openCapturePreview('cam1')"
+                                    style="background:#10b981;color:white;padding:8px 0;border:none;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s">
+                                <i class="fas fa-camera"></i> 攝影機 2
+                            </button>
+                            <button type="button" onclick="openCapturePreview('cam2')"
+                                    style="background:#f59e0b;color:white;padding:8px 0;border:none;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s">
+                                <i class="fas fa-camera"></i> 攝影機 3
+                            </button>
+                            <button type="button" onclick="openCapturePreview('cam3')"
+                                    style="background:#ec4899;color:white;padding:8px 0;border:none;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s">
+                                <i class="fas fa-camera"></i> 攝影機 4
+                            </button>
+                        </div>
+                        <p class="text-[10px] sm:text-[11px] text-slate-400 mt-0.5">按下後預覽確認是否為正確的攝影機</p>
+                    </div>
+
                     <!-- New files preview -->
                     <div id="new-photos-section" class="hidden">
-                        <div class="text-xs text-slate-500 mb-2">
+                        <div class="text-xs text-slate-500 mb-1.5 sm:mb-2">
                             新選擇 <span id="new-count" class="text-slate-700 font-bold">0</span> 張（尚未上傳）
                         </div>
-                        <div id="new-photos-grid" class="flex flex-wrap gap-2"></div>
+                        <div id="new-photos-grid" class="flex flex-wrap gap-1.5 sm:gap-2"></div>
                     </div>
                 </div>
 
                 <!-- Fields -->
-                <div class="space-y-3">
+                <div class="space-y-2 sm:space-y-3">
                     <div>
-                        <label class="block text-xs text-slate-500 mb-1.5 font-semibold">姓名 <span class="text-red-500">*</span></label>
+                        <label class="block text-xs text-slate-500 mb-1 sm:mb-1.5 font-semibold">姓名 <span class="text-red-500">*</span></label>
                         <input type="text" id="f-name" name="name" required placeholder="例：張三"
-                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
+                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 text-sm sm:text-base text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
                     </div>
                     <div>
-                        <label class="block text-xs text-slate-500 mb-1.5 font-semibold">員工編號</label>
+                        <label class="block text-xs text-slate-500 mb-1 sm:mb-1.5 font-semibold">員工編號</label>
                         <input type="text" id="f-empid" name="employee_id" placeholder="例：E001"
-                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all disabled:opacity-40 disabled:bg-slate-100">
+                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 text-sm sm:text-base text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all disabled:opacity-40 disabled:bg-slate-100">
                     </div>
                     <div>
-                        <label class="block text-xs text-slate-500 mb-1.5 font-semibold">職位</label>
+                        <label class="block text-xs text-slate-500 mb-1 sm:mb-1.5 font-semibold">職位</label>
                         <input type="text" id="f-role" name="role" placeholder="例：研究員"
-                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
+                               class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 text-sm sm:text-base text-slate-800 placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
                     </div>
-                    <div class="grid grid-cols-2 gap-3">
+                    <div class="grid grid-cols-2 gap-2 sm:gap-3">
                         <div>
-                            <label class="block text-xs text-slate-500 mb-1.5 font-semibold">進入時間</label>
+                            <label class="block text-xs text-slate-500 mb-1 sm:mb-1.5 font-semibold">進入時間</label>
                             <input type="time" id="f-start" name="access_start" value="08:00"
-                                   class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
+                                   class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 text-sm sm:text-base text-slate-800 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
                         </div>
                         <div>
-                            <label class="block text-xs text-slate-500 mb-1.5 font-semibold">離開時間</label>
+                            <label class="block text-xs text-slate-500 mb-1 sm:mb-1.5 font-semibold">離開時間</label>
                             <input type="time" id="f-end" name="access_end" value="17:00"
-                                   class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
+                                   class="w-full bg-white/70 border border-slate-200 rounded-xl px-3 py-2 sm:py-2.5 text-sm sm:text-base text-slate-800 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100 transition-all">
                         </div>
                     </div>
                 </div>
 
                 <p id="form-err" class="text-red-500 text-sm mt-3 hidden bg-red-50 border border-red-200 rounded-xl px-3 py-2"></p>
 
-                <div class="flex gap-3 mt-6">
+                <div class="flex gap-2 sm:gap-3 mt-4 sm:mt-6">
                     <button type="button" onclick="closeModal()"
-                            class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2.5 rounded-xl transition-colors text-sm">
+                            class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm">
                         取消
                     </button>
                     <button type="submit" id="submit-btn"
-                            class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm shadow-sm">
+                            class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm shadow-sm">
                         確認儲存
                     </button>
                 </div>
@@ -280,23 +372,23 @@
     </div>
 
     <!-- ─── Delete Confirm Modal ─── -->
-    <div id="del-modal" class="fixed inset-0 modal-overlay hidden z-50 flex items-center justify-center p-4">
-        <div class="glass-card w-full max-w-sm text-center p-6 fade-in">
-            <div class="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <i class="fas fa-trash text-red-500 text-xl"></i>
+    <div id="del-modal" class="fixed inset-0 modal-overlay hidden z-50 flex items-start sm:items-center justify-center overflow-y-auto">
+        <div class="glass-card w-full max-w-sm text-center m-2 sm:m-4 p-4 sm:p-6 fade-in modal-content rounded-xl sm:rounded-[1.5rem]">
+            <div class="w-12 h-12 sm:w-14 sm:h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4">
+                <i class="fas fa-trash text-red-500 text-lg sm:text-xl"></i>
             </div>
-            <h3 class="text-lg font-bold text-slate-800 mb-2">確認刪除</h3>
-            <p class="text-slate-500 text-sm mb-6">
+            <h3 class="text-base sm:text-lg font-bold text-slate-800 mb-2">確認刪除</h3>
+            <p class="text-slate-500 text-xs sm:text-sm mb-4 sm:mb-6">
                 確定刪除 <span id="del-name" class="text-slate-800 font-bold"></span>？<br>
-                <span class="text-red-500 text-xs">人臉資料將一併移除，此操作無法復原。</span>
+                <span class="text-red-500 text-[10px] sm:text-xs">人臉資料將一併移除，此操作無法復原。</span>
             </p>
-            <div class="flex gap-3">
+            <div class="flex gap-2 sm:gap-3">
                 <button onclick="closeDelModal()"
-                        class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2.5 rounded-xl transition-colors text-sm">
+                        class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm">
                     取消
                 </button>
                 <button onclick="confirmDelete()"
-                        class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm shadow-sm">
+                        class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm shadow-sm">
                     確認刪除
                 </button>
             </div>
@@ -351,29 +443,29 @@
 
                 return `<tr class="border-t border-slate-100 hover:bg-cyan-50/40 transition-colors"
                             data-search="${p.name.toLowerCase()} ${(p.employee_id||'').toLowerCase()}">
-                    <td class="px-5 py-3">${avatar}</td>
-                    <td class="px-5 py-3 font-semibold text-slate-800">${escHtml(p.name)}</td>
-                    <td class="px-5 py-3 text-slate-500">${escHtml(p.employee_id || '—')}</td>
-                    <td class="px-5 py-3 text-slate-600">${escHtml(p.role || '—')}</td>
-                    <td class="px-5 py-3 text-slate-600">
+                    <td class="px-3 sm:px-5 py-3">${avatar}</td>
+                    <td class="px-3 sm:px-5 py-3 font-semibold text-slate-800 text-xs sm:text-sm">${escHtml(p.name)}</td>
+                    <td class="px-3 sm:px-5 py-3 text-slate-500 hidden sm:table-cell">${escHtml(p.employee_id || '—')}</td>
+                    <td class="px-3 sm:px-5 py-3 text-slate-600 hidden sm:table-cell">${escHtml(p.role || '—')}</td>
+                    <td class="px-3 sm:px-5 py-3 text-slate-600 hidden md:table-cell">
                         <span class="flex items-center gap-1.5">
                             <i class="fas fa-clock text-cyan-500 text-xs"></i>
                             ${p.access_start} – ${p.access_end}
                         </span>
                     </td>
-                    <td class="px-5 py-3 text-center">${badge}</td>
-                    <td class="px-5 py-3">
-                        <div class="flex items-center justify-center gap-1">
+                    <td class="px-3 sm:px-5 py-3 text-center">${badge}</td>
+                    <td class="px-3 sm:px-5 py-3">
+                        <div class="flex items-center justify-center gap-0.5 sm:gap-1">
                             <button onclick="editPersonnel(${p.id})" title="編輯"
-                                    class="p-2 rounded-lg hover:bg-blue-100 text-blue-500 hover:text-blue-700 transition-colors">
+                                    class="p-1.5 sm:p-2 rounded-lg hover:bg-blue-100 text-blue-500 hover:text-blue-700 transition-colors">
                                 <i class="fas fa-pen text-xs"></i>
                             </button>
                             <button onclick="togglePersonnel(${p.id})" title="${p.is_active ? '停用' : '啟用'}"
-                                    class="p-2 rounded-lg hover:bg-amber-100 text-amber-500 hover:text-amber-700 transition-colors">
+                                    class="p-1.5 sm:p-2 rounded-lg hover:bg-amber-100 text-amber-500 hover:text-amber-700 transition-colors">
                                 <i class="fas fa-${p.is_active ? 'ban' : 'circle-check'} text-xs"></i>
                             </button>
                             <button onclick="openDelModal(${p.id}, '${escHtml(p.name)}')" title="刪除"
-                                    class="p-2 rounded-lg hover:bg-red-100 text-red-400 hover:text-red-600 transition-colors">
+                                    class="p-1.5 sm:p-2 rounded-lg hover:bg-red-100 text-red-400 hover:text-red-600 transition-colors">
                                 <i class="fas fa-trash text-xs"></i>
                             </button>
                         </div>
@@ -422,10 +514,12 @@
             section.classList.toggle('hidden', selectedFiles.length === 0);
             grid.innerHTML = selectedFiles.map((f, i) => {
                 const url = URL.createObjectURL(f);
-                return `<div class="relative w-20 h-20">
-                    <img src="${url}" class="w-20 h-20 rounded-xl object-cover border-2 border-white shadow-sm">
+                const cam = f.name.split('_')[0];
+                return `<div class="relative w-16 h-16 sm:w-20 sm:h-20">
+                    <img src="${url}" class="w-16 h-16 sm:w-20 sm:h-20 rounded-xl object-cover border-2 border-white shadow-sm">
+                    <span class="absolute bottom-0 left-0 right-0 text-[9px] sm:text-[10px] text-white font-bold text-center bg-black/50 rounded-b-xl py-0.5">${cam}</span>
                     <button type="button" onclick="removeNewPhoto(${i})"
-                            class="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center leading-none transition-colors shadow">
+                            class="absolute -top-1.5 -right-1.5 w-4 h-4 sm:w-5 sm:h-5 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs flex items-center justify-center leading-none transition-colors shadow">
                         &times;
                     </button>
                 </div>`;
@@ -444,16 +538,16 @@
                 section.classList.toggle('hidden', photos.length === 0);
 
                 grid.innerHTML = photos.map(filename => `
-                    <div class="relative group w-20 h-20" data-file="${escHtml(filename)}">
+                    <div class="relative group w-16 h-16 sm:w-20 sm:h-20" data-file="${escHtml(filename)}">
                         <img src="/api/personnel/${personId}/photo/${encodeURIComponent(filename)}?t=${Date.now()}"
-                             class="w-20 h-20 rounded-xl object-cover border-2 border-white shadow-sm transition-opacity group-hover:opacity-50"
+                             class="w-16 h-16 sm:w-20 sm:h-20 rounded-xl object-cover border-2 border-white shadow-sm transition-opacity group-hover:opacity-50"
                              onerror="this.style.opacity='0.2'">
                         <button type="button"
                                 onclick="deleteExistingPhoto(${personId}, this.closest('[data-file]').dataset.file)"
                                 class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-xl"
                                 title="刪除此照片">
-                            <span class="bg-white/80 rounded-lg p-2 shadow">
-                                <i class="fas fa-trash text-red-500 text-sm"></i>
+                            <span class="bg-white/80 rounded-lg p-1.5 sm:p-2 shadow">
+                                <i class="fas fa-trash text-red-500 text-xs sm:text-sm"></i>
                             </span>
                         </button>
                     </div>`
@@ -487,6 +581,7 @@
             resetPhotoState();
             hideErr();
             document.getElementById('modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
         }
 
         function editPersonnel(id) {
@@ -505,10 +600,12 @@
             hideErr();
             loadExistingPhotos(id);
             document.getElementById('modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
         }
 
         function closeModal() {
             document.getElementById('modal').classList.add('hidden');
+            document.body.style.overflow = '';
             selectedFiles = [];
         }
 
@@ -549,10 +646,12 @@
             delTargetId = id;
             document.getElementById('del-name').textContent = name;
             document.getElementById('del-modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
         }
         function closeDelModal() {
             delTargetId = null;
             document.getElementById('del-modal').classList.add('hidden');
+            document.body.style.overflow = '';
         }
         async function confirmDelete() {
             if (!delTargetId) return;
@@ -566,6 +665,88 @@
             el.classList.remove('hidden');
         }
         function hideErr() { document.getElementById('form-err').classList.add('hidden'); }
+
+        // ── Capture preview with face guidance ──
+        let previewCam = null;
+        let previewTimer = null;
+
+        function openCapturePreview(cam) {
+            previewCam = cam;
+            const labels = {yolo: '攝影機 1', cam1: '攝影機 2', cam2: '攝影機 3', cam3: '攝影機 4'};
+            document.getElementById('preview-cam-label').textContent = labels[cam] || cam;
+            document.getElementById('preview-guide-img').src = '';
+            document.getElementById('preview-loading').classList.remove('hidden');
+            document.getElementById('preview-capture-btn').disabled = true;
+            document.getElementById('preview-capture-btn').className =
+                'flex-1 bg-cyan-600/40 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm';
+            document.getElementById('preview-status').innerHTML =
+                '<span class="text-slate-400">分析中...</span>';
+            document.getElementById('capture-preview-modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+            refreshPreview();
+            previewTimer = setInterval(refreshPreview, 1500);
+        }
+
+        function closeCapturePreview() {
+            if (previewTimer) { clearInterval(previewTimer); previewTimer = null; }
+            document.getElementById('capture-preview-modal').classList.add('hidden');
+            document.body.style.overflow = '';
+            previewCam = null;
+        }
+
+        async function refreshPreview() {
+            if (!previewCam) return;
+            const ts = Date.now();
+            const cam = previewCam;
+            const img = document.getElementById('preview-guide-img');
+            const loading = document.getElementById('preview-loading');
+            const status = document.getElementById('preview-status');
+            const btn = document.getElementById('preview-capture-btn');
+
+            img.onload = () => loading.classList.add('hidden');
+            img.onerror = () => loading.classList.add('hidden');
+            img.src = `/api/face/capture-guide?cam=${cam}&t=${ts}`;
+
+            try {
+                const res = await fetch(`/api/face/capture-guide?cam=${cam}&t=${ts}&fmt=json`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const ready = data.ready;
+                status.innerHTML = `<span class="${ready ? 'text-green-600' : 'text-amber-600'}">${data.guidance}</span>`;
+                btn.disabled = !ready;
+                btn.className = ready
+                    ? 'flex-1 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm shadow-sm cursor-pointer'
+                    : 'flex-1 bg-cyan-600/40 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm';
+            } catch {}
+        }
+
+        async function confirmCapture() {
+            if (!previewCam) return;
+            closeCapturePreview();
+            const btn = document.querySelector(`.capture-btn[data-cam="${previewCam}"]`);
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                try {
+                    const res = await fetch(`/api/face/capture-entry?cam=${previewCam}`);
+                    if (!res.ok) { showErr(`無法從 ${previewCam} 取得影像`); return; }
+                    const blob = await res.blob();
+                    const file = new File([blob], `${previewCam}_${Date.now()}.jpg`, { type: 'image/jpeg' });
+                    selectedFiles.push(file);
+                    renderNewPreviews();
+                } catch {
+                    showErr('網路錯誤');
+                } finally {
+                    btn.disabled = false;
+                    btn.innerHTML = orig;
+                }
+            }
+        }
+
+        document.getElementById('capture-preview-modal').addEventListener('click', e => {
+            if (e.target === e.currentTarget) closeCapturePreview();
+        });
 
         function escHtml(str) {
             return String(str).replace(/[&<>"']/g, c =>

@@ -1,0 +1,230 @@
+================================================================================
+  PROBLEM ANALYSIS — ระบบตรวจจับใบหน้า Access Control
+================================================================================
+วันที่ : 30/5/2026
+ภาษา  : ไทย
+
+================================================================================
+1. ภาพรวมระบบ
+================================================================================
+
+ฮาร์ดแวร์:
+  - กล้อง USB 4 ตัว (A4Tech 3 ตัว + Logitech 1 ตัว, 640x480)
+  - YOLOv8n model ใช้ร่วมกันทุกกล้อง
+
+กล้องและการทำงานปัจจุบัน:
+
+  กล้อง 4 (YOLO cam)  — index 0, ตรงประตู
+    → ใช้ model.track(persist=True)
+    → มี built-in tracker, ใช้ได้แค่ 1 thread
+    → หน้าที่: ตรวจจับภาพรวมคนในห้อง, ยืนยัน EXIT
+
+  กล้อง 1 (cam1)      — index 1, ตรงประตูด้านเข้า
+    → ใช้ model() + custom _match_boxes()
+    → หน้าที่: trigger ENTER
+
+  กล้อง 2 (cam2)      — index 2, กลางห้อง จ่อประตู
+    → ใช้ model() + custom _match_boxes()
+    → หน้าที่: 识别ใบหน้าหลัก (เห็นหน้าชัดที่สุด)
+
+  กล้อง 3 (cam3)      — index 3, มุมห้อง
+    → ใช้ model() + custom _match_boxes()
+    → หน้าที่: pre-EXIT signal
+
+================================================================================
+2. PROBLEM 1 — model_infer_lock คอขวด (กล้องทำงานพร้อมกันไม่ได้จริง)
+================================================================================
+
+สาเหตุ:
+  - model 1 ตัว ใช้ร่วมกัน 4 กล้อง
+  - model_infer_lock กัน inference พร้อมกัน
+  - ทั้ง 4 กล้อง (YOLO+surv) รอ lock เดียวกัน
+
+  โค้ดที่เกี่ยวข้อง:
+    app.py:338-339  — YOLO cam: with model_infer_lock: model.track(...)
+    app.py:885-886  — surv cams: with model_infer_lock: model(img, ...)
+
+  ปัจจุบัน:
+    YOLO cam → track() ─┐
+                         ├── model_infer_lock ── model ตัวเดียว
+    cam2      → model()  ─┘
+    cam1      → model()  ─┘ (กล้องอื่นต้องรอ)
+    cam3      → model()  ─┘
+
+  ปัญหาที่เกิด:
+    - กล้อง 2 detect ช้า เพราะรอ YOLO cam + กล้องอื่น
+    - กล้อง 4 (YOLO) track สะดุด เพราะรอ surv cams
+    - ยิ่งมีคนเข้า detect loop ยิ่งหนัก
+
+ผลกระทบ:
+  - Entry: cam2 ตรวจจับไม่ทัน → พลาด ENTER
+  - Exit: YOLO track ขาดช่วง → EXIT ไม่เสถียร
+  - โดยรวม: False negative สูง
+
+================================================================================
+3. PROBLEM 2 — กล้อง 2 (cam2) Tracking ไม่เสถียร
+================================================================================
+
+สาเหตุ:
+  - cam2 ใช้ model() + _match_boxes() แทน track()
+  - _match_boxes() ใช้แค่ IoU 0.15 + center distance fallback
+  - ไม่มี Kalman filter หรือ motion prediction
+  - เมื่อคนเดินเข้า frame → box ขยับ > 15% overlap → track หลุด
+  - track_id ใหม่ทุกครั้ง → buffer face crop ที่สะสมหาย
+  
+  โค้ดที่เกี่ยวข้อง:
+    app.py:587-647  — _match_boxes()
+    app.py:857-861  — surv_track_crops, surv_track_ident, surv_track_first_seen
+                      (ตัวแปร local per camera — ถูกสร้างใหม่ทุก detect cycle)
+
+  ปัญหาที่เกิด:
+    - หน้า crops ที่สะสมไว้ใน buffer หาย
+    - ต้องเริ่ม recognize ใหม่ตั้งแต่ต้น
+    - คนเดินผ่านเร็ว → พลาด identify → กลายเป็น unknown
+
+ผลกระทบ:
+  - False reject สูง (คนที่อยู่ในห้องแต่ system มองว่าไม่รู้จัก)
+  - ENTER trigger อาจไม่เกิดเพราะ identify ไม่ทัน
+
+================================================================================
+4. PROBLEM 3 — Face Recognition Rate Limit บน cam2 (3 วินาที)
+================================================================================
+
+สาเหตุ:
+  - surv detect loop มี SURV_FACE_INTERVAL = 3.0 วินาที (แปรผันตามกล้อง)
+  
+  โค้ดที่เกี่ยวข้อง:
+    app.py:928-931
+      if now - last_face_time < SURV_FACE_INTERVAL:
+          continue
+      last_face_time = now
+
+  ปัญหาที่เกิด:
+    - คนเปิดประตู เข้ามาใน frame cam2 → รอ 3 วิถึงจะ recognize
+    - แต่คนเดินต่อ เข้าห้องไปแล้ว → เฟรมที่ capture ไม่ใช่หน้าชัดที่สุด
+    - หรือ worst case: recognize ยังไม่ทัน คนพ้น frame ไปแล้ว
+
+ผลกระทบ:
+  - Entry: identify ไม่ทัน → state machine ไม่มี data → ไม่เกิด ENTER event
+  - Unknown alert: รอ 20 วิ (UNKNOWN_DEFER_SEC) ถึงจะแจ้ง → ตอบสนองช้า
+
+================================================================================
+5. PROBLEM 4 — ระบบไม่มีทิศทาง (Direction) ของคนเข้า/ออก
+================================================================================
+
+สาเหตุ:
+  - state machine log ENTER/EXIT ได้ แต่:
+    - unknown alert ไม่แยกทิศทาง — แจ้งแค่ "พบ不明人士"
+    - ภาพ capture ไม่ match กับ event type
+    - ไม่มี "entry_image" / "exit_image" แยกกัน
+    - คนที่กล้อง 1 เห็น = หรือคนที่กล้อง 2 เห็น → ระบบแยกไม่ออกว่าเข้า/ออก
+
+  โค้ดที่เกี่ยวข้อง:
+    app.py:1006-1017
+      # Update dashboard face list (cam1 = entry door)
+      if cam_id == 1 and img is not None:
+          # ใช้ cam1 image (ประตู) บันทึก! ไม่ใช่ cam2
+          threading.Thread(target=_save_cam2_capture,
+                           args=(img.copy(),), daemon=True).start()
+    app.py:1297-1312  — update_unknown_sighting — alert แบบไม่มี direction
+    
+  ปัญหาที่เกิด:
+    - ระบบแค่จับ "เห็นคน" ไม่ได้จับ "คนเข้า" หรือ "คนออก"
+    - ถ้ากล้อง 1 เห็นคนที่เดินผ่านเฉยๆ → ระบบคิดว่า ENTER
+    - unknown alert ไม่บอกว่าคนกำลังเข้าหรือออก
+
+ผลกระทบ:
+  - False positive ENTER (คนเดินผ่านประตูแต่ไม่ได้เข้า)
+  - แจ้งเตือนผิดทิศทาง
+  - Occupancy count ไม่ตรง reality
+
+================================================================================
+6. PROBLEM 5 — Web UI "最新偵測成員" แสดงภาพผิดกล้อง
+================================================================================
+
+สาเหตุ:
+  - _save_cam2_capture() ที่ชื่อว่า cam2 แต่จริงๆ เก็บภาพจาก cam1!
+    (ดูโค้ด: if cam_id == 1 → save → cam2_capture_path)
+  - ไม่มีตัวแปรแยกสำหรับ "entry capture" กับ "exit capture"
+  - get_latest_face() ส่ง capture_url จาก cam2_capture_path เสมอ
+
+  โค้ดที่เกี่ยวข้อง:
+    app.py:832-842   — _save_cam2_capture (ชื่อ误导, จริงๆ ภาพจาก cam1)
+    app.py:1006-1017 — บันทึกภาพจาก cam_id == 1 ใส่ cam2_capture_path
+    app.py:1728-1764 — get_latest_face returns capture_url → cam2_capture_path
+
+  สิ่งที่ user ต้องการ (เข้าใจจาก requirement):
+    - ENTER → แสดงภาพจาก กล้อง 2 (cam2) — ภาพจ่อประตู เห็นหน้าชัด
+    - EXIT → แสดงภาพจาก กล้อง 4 (YOLO cam) — ภาพประตู ตอนคนออก
+    - แยก event type ใน web UI
+
+ผลกระทบ:
+  - Web "最新偵測成員" แสดงภาพไม่ตรงกับ event
+  - ภาพที่เห็นเป็น cam1 (ประตูเข้า) ไม่ใช่หน้ากล้อง 2
+  - ไม่มีภาพตอนออกให้ดูเลย
+
+================================================================================
+7. PROBLEM 6 — ไม่มีการแชร์ Identity ข้ามกล้อง
+================================================================================
+
+สาเหตุ:
+  - แต่ละ surv cam มี surv_track_ident dict ของตัวเอง (local variable)
+  - ถ้า cam2 identify คนได้ → cam1 และ cam3 ก็ต้อง run recognize ใหม่เอง
+  - YOLO cam มี track_identity แยกอีกชุด
+
+  โค้ดที่เกี่ยวข้อง:
+    app.py:857-861  — surv_track_ident = {} (local per camera)
+    app.py:706-830  — face_recognition_loop ใช้ track_identity (YOLO's own buffer)
+
+  ปัญหาที่เกิด:
+    - CPU สิ้นเปลือง — กล้อง 3 ตัว recognize คนเดียวกันซ้ำซ้อน
+    - latency สูงขึ้นโดยใช่เหตุ
+    - ผล recognize ต่างกัน (คนละ frame คุณภาพต่าง) → state machine สับสน
+
+ผลกระทบ:
+  - เสีย CPU โดยเปล่าประโยชน์
+  - state machine ได้ข้อมูลจากหลายกล้องไม่ consistent
+  - ระบบตอบสนองช้าโดยไม่จำเป็น
+
+================================================================================
+8. สรุปลำดับความสำคัญ (Priority)
+================================================================================
+
+P1 — แก้ปัญหาหลักที่ทำให้ระบบตรวจจับพลาด:
+  [ ] แยก model instance (model_yolo + model_surv) — แก้ lock contention
+  [ ] ยกเลิก rate limit face rec บน cam2 (หรือลดเหลือ 1.0s)
+  [ ] ปรับ unknown alert cooldown หรือเปลี่ยน logic
+
+P2 — แก้ Web UI แสดงผลผิด:
+  [ ] สร้างตัวแปร entry_capture_path (ภาพจาก cam2 ตอน ENTER)
+  [ ] สร้างตัวแปร exit_capture_path (ภาพจาก YOLO cam ตอน EXIT)
+  [ ] แก้ get_latest_face() แยก event type
+  [ ] แก้ "最新偵測成員" ใน HTML แสดงภาพตาม event
+
+P3 — Optimization:
+  [ ] แชร์ identity ข้ามกล้อง — ถ้า cam2 identify แล้ว แจ้งกล้องอื่นไม่ต้องรันใหม่
+  [ ] ปรับ improve _match_boxes() tracking
+
+================================================================================
+9. ไฟล์และบรรทัดที่ต้องแก้
+================================================================================
+
+app.py (2324 บรรทัด):
+  - model setup                 : ~บรรทัด 95-110 (global vars)
+  - yolo_capture_loop()         : บรรทัด 275-456
+  - surv_detect_loop()          : บรรทัด 845-1025
+  - _save_cam2_capture()        : บรรทัด 832-842
+  - update_sighting()           : บรรทัด 1278-1294
+  - unified_state_machine()     : บรรทัด 1353-1414
+  - _do_notify_enter()          : บรรทัด 1333-1338
+  - _do_notify_exit()           : บรรทัด 1341-1350
+  - log_room_event()            : บรรทัด 1237-1261
+  - get_latest_face()           : บรรทัด 1728-1764
+  - get_latest_capture()        : บรรทัด 1766-1773
+  - init_system()               : บรรทัด 1830-1861
+
+index.html (1400 บรรทัด):
+  - 最新偵測成員 section         : บรรทัด 471-488
+  - fetchLatestFace()           : บรรทัด 808-867
+
+================================================================================
