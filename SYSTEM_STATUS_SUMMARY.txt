@@ -3,33 +3,37 @@
 === หลักการทำงานของระบบ (Logic Overview) ===
 
 1. การตรวจจับคนเข้า-ออก (ENTER/EXIT)
-   - ใช้กล้อง 4 ตัว: YOLO (ภาพรวม), cam1 (ประตูเข้า), cam2 (ใบหน้าในห้อง), cam3 (มุมออก)
+   - ใช้กล้อง 4 ตัว:
+     - 攝影機1 (YOLO/cam_id=0): กลางห้อง — body detection + face rec (ไกล)
+     - 攝影機2 (cam_id=1): จ่อหน้าประตู — face rec หลัก (ENTER trigger)
+     - 攝影機3 (cam_id=2): ด้านข้างพื้นที่หน้าประตู — body/face (ปัจจุบัน face rec ไม่ได้ผล)
+     - 攝影機4 (cam_id=3): หันเข้าห้องจับหน้าตอนออก — face rec + YOLO proxy fallback
    - Face recognition: ArcFace (InsightFace buffalo_l) + cosine distance
-   - CAM_NO_FACE_RECOGNITION = {3}  → cam3 ใช้ YOLO body detection แทน face rec
+   - CAM_NO_FACE_RECOGNITION = set() (ยกเลิก — ทุกกล้องลองสแกนหน้า)
 
 2. State Machine (unified_state_machine)
-   - person_state: {face_folder: {inside, entered_at, last_seen{cam_id}, last_confidence, exit_pending, ...}}
+   - person_state: {face_folder: {inside, entered_at, entered_at_timestamp, last_seen{cam_id}, last_confidence, exit_pending, ...}}
    - ENTER Logic: เมื่อคนอยู่นอก (inside=False)
        เช็ค last_seen[cam_id] < ENTRY_WINDOW_SEC (12วินาที)
        เงื่อนไข ENTER:
-         - cam1_solo: cam1 เห็น + confidence >= 0.40
-         - cam2_solo: cam2 เห็น + confidence >= 0.80 (ใช้ไม่ได้เพราะ cam2 ไม่เห็นหน้า)
-         - cross_conf: cam1 + cam2 เห็นพร้อมกัน (ใช้ไม่ได้เพราะ cam2)
-       → ปัจจุบันใช้ cam1_solo เป็นหลัก
-   - EXIT Logic (2-Stage): เมื่อคนอยู่ในห้อง (inside=True)
-       Stage 1: cam3 เห็นคนภายใน EXIT_WINDOW_SEC (8วิ) → exit_pending=True
+         - cam1_solo: CAM1 (攝影機2) เห็น + confidence >= 0.40
+         - cam2_solo: CAM2 (攝影機3) เห็น + confidence >= 0.80 (ใช้ไม่ได้)
+         - cross_conf: CAM1 + CAM2 เห็นพร้อมกัน (ใช้ไม่ได้)
+       → ใช้ cam1_solo เป็นหลัก + VOTE_REQUIRED=1 (識別ครั้งเดียวจบ)
+   - EXIT Logic (2-Stage + Grace Period): เมื่อคนอยู่ในห้อง (inside=True)
+       Stage 1: CAM3 (攝影機4) เห็นคนภายใน EXIT_WINDOW_SEC (8วิ) → exit_pending=True
+         - CAM3 พยายาม scan หน้าก่อน ถ้าไม่ได้ → YOLO body proxy infer
+       Grace Period: ถ้าเพิ่ง ENTER <30วิ → EXIT IGNORED (ป้องกัน EXIT วน)
        Stage 2: รอ EXIT_CONFIRM_DELAY_SEC (8วิ) แล้วตรวจสอบว่ายังมีคนอยู่ไหม
-         - ก่อนแก้: เช็คแค่ cam2 (cam2_still_sees) → cam2 ใช้ไม่ได้ → EXIT ทุกครั้ง
-         - หลังแก้: เช็ค cam2_still_sees OR yolo_still_sees (last_seen['yolo'] < 12วิ)
-           → ถ้า YOLO ยังเห็นคน → EXIT CANCELLED
-           → ถ้า YOLO + cam2 ไม่เห็นเลย → EXIT CONFIRMED
+         - เช็ค CAM1 (攝影機2) OR CAM2 (攝影機3) OR YOLO (攝影機1)
+         → ถ้ายังมีใครเห็น → EXIT CANCELLED
+         → ถ้าไม่เห็นเลย → EXIT CONFIRMED
        Timeout: EXIT_MAX_WAIT_SEC = 30วิ → force EXIT
 
-3. Voting Mechanism (cam1, cam3)
-   - cam1 ต้องสะสม VOTE_REQUIRED=2 ครั้งภายใน VOTE_WINDOW_SEC=12วิ
-     ก่อน update_sighting() จะถูกเรียก
-   - cam2 ไม่ต้อง vote (update ทันที) แต่ cam2 ใช้ไม่ได้
-   - cam3 ไม่มี face rec → ใช้ YOLO proxy infer
+3. Voting Mechanism
+   - VOTE_REQUIRED=1 (識別ครั้งเดียวพอ — face rec มี quality gates แล้ว)
+   - CAM2 (攝影機3) update ทันทีไม่ต้อง vote
+   - CAM1 + CAM3 ใช้ vote 1/1
 
 4. Dashboard / Frontend
    - /api/room/status → person_state[inside=True] → 在室人員
@@ -51,14 +55,18 @@
 - ENTER logged → แต่ EXIT CONFIRMED ทันที → ENTER → EXIT Loop
 - Loop 3 รอบในเวลาไม่กี่นาที → Telegram spam 9 ครั้ง
 
-[หลังแก้โค้ด - ปัจจุบัน]
-- ✅ ENTER ผ่าน cam1 (confidence 0.48-0.53)
-- ✅ EXIT PENDING → แต่ YOLO ยังเห็นคน → EXIT CANCELLED
-- ✅ ระบบไม่ loop ENTER/EXIT ซ้ำ
-- ✅ ใน室人員 ควรแสดงถูกต้อง
+[หลังแก้โค้ด - รอบที่ 2 (31 May 2026)]
+- ✅ ENTER ผ่าน CAM1 (攝影機2 จ่อประตู, VOTE_REQUIRED=1)
+- ✅ EXIT IGNORED (grace) 30 วิ หลัง ENTER ป้องกัน EXIT วน
+- ✅ EXIT CONFIRMED เมื่อทุกกล้องไม่เห็นคน (CAM1+CAM2+YOLO)
+- ✅ Telegram debounce 60 วิ/คน ลด spam
 - ✅ FACE DB rebuild แค่ครั้งเดียวตอน startup
-- ❌ cam2 ยังใช้ไม่ได้ (ไม่เห็นใบหน้า)
-- ❌ Telegram notification ส่งทุก ENTER (อาจเยอะไป)
+- ✅ CAM_NO_FACE_RECOGNITION = set() → ทุกกล้องลองสแกนหน้า
+- ✅ crop head region ปรับ 40%→30% โฟกัสใบหน้า
+- ✅ UNKNOWN alert ปิดจาก YOLO cam — CAM1 (ประตู) จัดการแทน
+- ✅ CAM_PROFILE min_size=22 ทุกกล้อง, quality ปรับลด
+- ❌ CAM2 (攝影機3) + CAM3 (攝影機4) ยัง scan หน้าไม่ได้
+- ❌ CAM1 (攝影機2) ใช้เวลานาน (~17วินาที) ก่อน識別หน้า
 
 === ปัญหาที่แก้แล้ว ===
 
@@ -67,42 +75,92 @@
      แต่ HTML ใช้ occupant-list/occupant-count-badge/occupant-empty-badge
    - แก้: เปลี่ยน JS ID ให้ตรงกับ HTML (index.html:1362-1364)
 
-2. Unknown alert (未知人員) ผิด
+2. Unknown alert (未知人員) ผิด (ครั้งที่ 1)
    - สาเหตุ: _cleanup_stale_tracks() เช็คทีละ Track-ID
      แต่ YOLO สร้างหลาย Track-ID ต่อคนเดียว
      Track 13,15,16,17 ไม่ถูกจำ → alert ทั้งที่ Track 18 จำคนได้
    - แก้: เพิ่ม any_identified flag ก่อน alert (app.py:718)
 
-3. latest_face_list ค้างคนเก่า
+3. Unknown alert (ครั้งที่ 2)
+   - สาเหตุ: Track เก่า timeout ก่อน Track ใหม่識別 → alert ปลอม
+   - แก้: YOLO cam ไม่ยิง unknown alert — CAM1 (攝影機2) จัดการแทน
+     (app.py:740-747)
+
+4. latest_face_list ค้างคนเก่า
    - สาเหตุ: อัปเดทเฉพาะเมื่อ current_tracks มีค่า
      ไม่มี else ล้าง list
    - แก้: เพิ่ม else: latest_face_list = [] (app.py:872)
 
-4. FACE DB rebuild ซ้ำหลายรอบ
+5. FACE DB rebuild ซ้ำหลายรอบ
    - สาเหตุ: _ensure_db() ไม่มี lock → หลาย thread rebuild พร้อมกัน
    - แก้: เพิ่ม _db_building + _db_build_lock (face_utils.py:34-36, 130-143)
    - เพิ่ม _build_db() ตอน startup (app.py:2242)
 
-5. EXIT Loop (ENTER → EXIT → ENTER)
+6. EXIT Loop (ENTER → EXIT → ENTER)
    - สาเหตุ: EXIT ตรวจสอบแค่ cam2_still_sees ซึ่งเป็น False เสมอ
    - แก้: เพิ่ม yolo_still_sees ในเงื่อนไข (app.py:1597-1599)
      "no camera sees them → EXIT" / "YOLO still sees → CANCELLED"
 
+7. EXIT ทันทีหลัง ENTER (Round 2)
+   - สาเหตุ: cam3 เห็นคนที่ทางออกทันทีที่เดินเข้า → EXIT PENDING ทันที
+   - แก้: เพิ่ม Grace Period 30วินาทีหลัง ENTER (EXIT IGNORED)
+     + เช็ค cam1_still_sees (攝影機2) เพิ่มใน still_sees
+     (app.py:1607-1614)
+
+8. Telegram spam (Round 2)
+   - สาเหตุ: ส่ง notification ทุก ENTER
+   - แก้: เพิ่ม _do_notify_enter debounce 60วิ/คน (app.py:1428-1438)
+
+9. VOTE_REQUIRED=2 ไม่มีวันถึง (Round 2)
+   - สาเหตุ: แต่ละ Track-ID識別แล้ว cached → โหวตแค่ครั้งเดียว
+   - แก้: VOTE_REQUIRED=2→1 (app.py:127)
+     (face rec มี quality gates เพียงพออยู่แล้ว)
+
+10. Crop ใบหน้าพลาด (Round 2)
+    - สาเหตุ: crop top 40% ของ YOLO box → ได้หัวไหล่ ไม่ใช่ใบหน้า
+    - แก้: 40%→30%, margin 8%→5% (app.py:695-697)
+
+11. _ensure_db() global variable error (Round 2)
+    - สาเหตุ: ขาด global declaration → import จากไฟล์อื่น error
+    - แก้: เพิ่ม global _db_building, _db_ready (face_utils.py:131)
+
+12. Unknown alert ปลอมจาก YOLO cam (Round 2)
+    - สาเหตุ: YOLO cam (กลางห้อง) เห็นคนไกล → หน้า < min_size
+      → timeout 15-25วินาที → alert → ทั้งที่ CAM1識別ได้แล้ว
+    - แก้: ปิด YOLO unknown alert ให้ CAM1 (攝影機2) จัดการ
+      (app.py:739-740)
+
 === ปัญหาที่ยังเหลือ ===
 
-1. cam2 ไม่เห็นใบหน้า → ยังพึ่งพา YOLO ตัวเดียวในการยืนยัน presence
-2. Telegram ENTER notification ส่งทุกครั้ง (อาจ spam ถ้าเข้า-ออกบ่อย)
-3. EXIT PENDING → CANCELLED วนซ้ำใน log ขณะที่ cam3 ยังเห็นคน
+1. CAM2 (攝影機3 ด้านข้าง) + CAM3 (攝影機4 จับหน้าออก)
+   → scan หน้าไม่ได้ ("no face detected" ตลอด)
+   → ใช้ YOLO body proxy fallback แทน
+   → สาเหตุ: physical camera position (คนหันหลัง/อยู่ไกล)
+2. CAM1 (攝影機2 จ่อประตู) ใช้เวลา ~17วินาทีก่อน識別หน้าได้
+   → เพราะต้องรอให้คนเดินใกล้พอ (49x63px)
+   → ถ้าคนยืนนิ่งหน้ากล้องนานๆติดขัด
+3. FACE DB embedding rebuild ตอน startup
+   → เสียเวลา ~4-5วินาที ทุกครั้งที่ restart
 
 === การตั้งค่าที่เกี่ยวข้อง ===
 - ENTRY_WINDOW_SEC       = 12
 - EXIT_WINDOW_SEC        = 8
 - EXIT_CONFIRM_DELAY_SEC = 8
 - EXIT_MAX_WAIT_SEC      = 30
+- MIN_STAY_SEC           = 30   (Grace Period — EXIT IGNORED หลัง ENTER)
 - CAM2_SOLO_CONFIDENCE   = 0.80
-- VOTE_REQUIRED          = 2
+- VOTE_REQUIRED          = 1    (แต่ก่อน 2 — reduce เพราะ Track-ID cached)
 - VOTE_WINDOW_SEC        = 12
-- UNKNOWN_DEFER_SEC      = 8
+- UNKNOWN_DEFER_SEC      = 15   (CAM1 entrance door)
 - UNKNOWN_COOLDOWN_SEC   = 60
+- ENTER_NOTIFY_COOLDOWN  = 60   (Telegram ENTER debounce)
 - MIN_CONFIDENCE         = 0.50 (detection/config.py)
 - SIMILARITY_THRESHOLD   = 0.55 (detection/face_utils.py)
+- SOFT_SIZE_THRESHOLD    = 50
+- FACE_SIZE_PENALTY      = 0.08
+- HEAD_CROP_RATIO        = 0.30 (แต่ก่อน 0.40 — crop แคบลง โฟกัสใบหน้า)
+- HEAD_CROP_MARGIN       = 0.05 (แต่ก่อน 0.08)
+- CAM_PROFILE            = ดูใน detection/face_utils.py
+  - min_size=22 ทุกกล้อง (แต่ก่อน 25-28)
+  - quality=0.38-0.42 (แต่ก่อน 0.40-0.45)
+  - sim_thresh=0.50-0.55

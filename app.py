@@ -71,7 +71,7 @@ face_pending_lock        = threading.Lock()
 # Track buffer: per track_id keep N recent face crops + identity
 TRACK_BUFFER_SIZE     = 8          # max crops per track
 TRACK_CLEANUP_TIMEOUT = 5.0        # seconds without sighting → remove track
-UNKNOWN_DEFER_SEC     = 8          # wait N sec before sending "unknown" alert
+UNKNOWN_DEFER_SEC     = 15         # wait N sec before sending "unknown" alert (CAM1 entrance door)
 track_crop_buffer     = {}         # {track_id: [crop_img, ...]}
 track_identity        = {}         # {track_id: {name, status, confidence}}
 track_last_seen       = {}         # {track_id: timestamp}
@@ -124,7 +124,7 @@ best_frame_locks   = {1: threading.Lock(), 2: threading.Lock(), 3: threading.Loc
 
 # Voting: cam1 and cam3 require N consistent recognitions before update_sighting()
 # cam2 updates immediately (real-time presence tracking)
-VOTE_REQUIRED      = 2    # consecutive recognitions needed for cam1/cam3
+VOTE_REQUIRED      = 1    # single recognition enough (face rec already has quality gates)
 VOTE_WINDOW_SEC    = 12   # votes older than this are discarded
 _vote_records      = {1: {}, 3: {}}   # {cam_id: {face_folder: [timestamps]}}
 _vote_lock         = threading.Lock()
@@ -137,7 +137,7 @@ CENTER_DIST_LIMIT   = 0.20  # fallback: max center movement as fraction of frame
 SURV_TRACK_BUFFER_SIZES = {1: 12, 2: 6, 3: 4}  # cam1 backup=more buffer, cam3 no face rec
 
 # ── Cameras that skip face recognition (e.g. exit cam sees only legs) ──
-CAM_NO_FACE_RECOGNITION = {3}
+CAM_NO_FACE_RECOGNITION = set()
 
 # ── YOLO camera → 即時 - YOLO AI section ──
 yolo_cap         = None
@@ -689,12 +689,13 @@ def _match_boxes(prev_boxes, curr_boxes, iou_thresh=None, frame_width=640):
     return matched
 
 
-def _crop_face_from_box(img, box):
-    """Crop head/shoulder region from a YOLO bounding box. Returns (crop, ok)."""
+def _crop_face_from_box(img, box, head_ratio=0.30):
+    """Crop head region from a YOLO bounding box. Returns (crop, ok).
+    head_ratio: fraction of box height to crop from top (lower = more focused on face area)."""
     x1, y1, x2, y2 = map(int, box.xyxy[0])
     box_h   = y2 - y1
-    head_y2 = min(img.shape[0], y1 + int(box_h * 0.40))
-    margin  = max(10, int(box_h * 0.08))
+    head_y2 = min(img.shape[0], y1 + int(box_h * head_ratio))
+    margin  = max(10, int(box_h * 0.05))
     crop_y1 = max(0, y1 - margin)
     crop_x1 = max(0, x1)
     crop_x2 = min(img.shape[1], x2)
@@ -714,7 +715,7 @@ def _cleanup_stale_tracks():
     # Fire deferred unknown alerts for confirmed-unknown tracks
     with track_buffer_lock:
         # ถ้ามี track ไหนถูกจำได้แล้ว → ไม่ต้อง alert unknown
-        any_identified = any(tid in track_identity for tid in track_first_seen)
+        any_identified = bool(track_identity)
         fire_tids = []
         for tid, first_seen in list(track_first_seen.items()):
             if tid in track_identity:
@@ -735,15 +736,16 @@ def _cleanup_stale_tracks():
             track_last_seen.pop(tid, None)
             track_first_seen.pop(tid, None)
 
-    # Fire alerts outside lock (using global yolo_frame for full-scene image)
+    # Fire alerts outside lock
+    # YOLO cam unknown alerts disabled — it's an overview camera, faces are always too small.
+    # Unknown person detection is handled by CAM1 (entrance door) in surv_detect_loop.
     for tid in fire_tids:
-        print(f"🔔 DEFERRED: track {tid} still unknown after {UNKNOWN_DEFER_SEC}s → alert")
+        print(f"🔔 DEFERRED: YOLO track {tid} unknown after {UNKNOWN_DEFER_SEC}s (suppressed — CAM1 handles unknown alerts)")
         with yolo_lock:
             yolo_img_bytes = yolo_frame
         yolo_img = None
         if yolo_img_bytes:
             yolo_img = cv2.imdecode(np.frombuffer(yolo_img_bytes, np.uint8), cv2.IMREAD_COLOR)
-        update_unknown_sighting('yolo', yolo_img)
 
     if stale:
         print(f"🧹 TRACK: cleaned {len(stale)} stale track(s)")
@@ -1370,6 +1372,7 @@ def update_sighting(face_folder, name, cam_id, confidence=0.0):
                 "name":            name,
                 "inside":          False,
                 "entered_at":      None,
+                "entered_at_timestamp": None,
                 "last_seen":       {1: 0, 2: 0, 3: 0, 'yolo': 0},
                 "last_confidence": {1: 0.0, 2: 0.0, 3: 0.0, 'yolo': 0.0},
                 "exit_pending":    False,
@@ -1423,7 +1426,20 @@ def _cast_vote(cam_id, face_folder):
     return reached
 
 
+_last_enter_notify = {}
+_enter_notify_lock = threading.Lock()
+ENTER_NOTIFY_COOLDOWN = 60  # seconds between Telegram ENTER alerts per person
+
 def _do_notify_enter(name, face_folder):
+    # Debounce: skip Telegram if notified recently for same person
+    with _enter_notify_lock:
+        last = _last_enter_notify.get(face_folder, 0)
+        if time.time() - last < ENTER_NOTIFY_COOLDOWN:
+            log_room_event("ENTER", name, face_folder, 1)
+            print(f"🚪 ENTER logged: {name} (Telegram skipped — cooldown)")
+            return
+        _last_enter_notify[face_folder] = time.time()
+
     ts  = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     # Check authorization status
     rule = next(
@@ -1569,6 +1585,7 @@ def unified_state_machine():
                         if cam1_solo or cam2_solo or cross_conf:
                             state['inside']       = True
                             state['entered_at']   = datetime.now()
+                            state['entered_at_timestamp'] = time.time()
                             state['exit_pending'] = False
                             name   = state['name']
                             reason = ("cam1 solo" if cam1_solo else
@@ -1583,20 +1600,35 @@ def unified_state_machine():
                             threading.Thread(target=_do_notify_enter,
                                              args=(name, face_folder), daemon=True).start()
 
-                    # ── EXIT: 2-Stage — Cam3 triggers, Cam2 confirms ──────────
+                    # ── EXIT: 2-Stage — Cam3 triggers, Cams confirm ──────────
                     else:
                         # Stage 1: Cam3 sees person near exit → start exit watch
                         if cam3 and not state['exit_pending']:
                             state['exit_pending']    = True
                             state['exit_started_at'] = now
-                            print(f"🚶 EXIT PENDING: {state['name']} — รอ Cam2/YOLO ยืนยัน")
+                            print(f"🚶 EXIT PENDING: {state['name']} — รอ確認離開")
 
-                        # Stage 2: After delay, check if cam2 or yolo still sees them
+                        # Stage 2: After delay, check if any cam still sees them
                         if state['exit_pending']:
-                            waited = now - state['exit_started_at']
+                            waited      = now - state['exit_started_at']
+                            entered_ago = now - state.get('entered_at_timestamp', 0)
+
+                            # Check all cameras (cam1, cam2, yolo) for presence
+                            cam1_still_sees = now - state['last_seen'].get(1, 0) < ENTRY_WINDOW_SEC
                             yolo_still_sees = now - state['last_seen'].get('yolo', 0) < ENTRY_WINDOW_SEC
                             cam2_still_sees = cam2
-                            still_sees = cam2_still_sees or yolo_still_sees
+                            still_sees = cam1_still_sees or cam2_still_sees or yolo_still_sees
+
+                            # Grace period: if just entered (< 30s), don't allow EXIT
+                            MIN_STAY_SEC = 30
+                            just_entered = entered_ago < MIN_STAY_SEC
+                            if just_entered and still_sees:
+                                # Ignore exit trigger — person probably just walked past cam3
+                                state['exit_pending']    = False
+                                state['exit_started_at'] = 0
+                                print(f"↩️ EXIT IGNORED (grace): {state['name']} entered {entered_ago:.0f}s ago")
+                                continue
+
                             if waited >= EXIT_CONFIRM_DELAY_SEC:
                                 if not still_sees:
                                     # no camera sees them → person has left the room
@@ -1605,6 +1637,7 @@ def unified_state_machine():
                                     name = state['name']
                                     state['inside']          = False
                                     state['entered_at']      = None
+                                    state['entered_at_timestamp'] = None
                                     state['exit_pending']    = False
                                     state['exit_started_at'] = 0
                                     _save_event_capture("EXIT")
@@ -1612,13 +1645,13 @@ def unified_state_machine():
                                         latest_event_type   = "EXIT"
                                         latest_event_person = name
                                     record_exit(name)
-                                    reason = "Cam2/YOLO ไม่เห็นแล้ว"
+                                    reason = "所有鏡頭都看不見"
                                     print(f"🚪 EXIT CONFIRMED: {name} ({reason})")
                                     threading.Thread(target=_do_notify_exit,
                                                      args=(name, face_folder, dur), daemon=True).start()
                                 else:
                                     # still sees → cancel EXIT
-                                    src = "Cam2" if cam2_still_sees else "YOLO"
+                                    src = "CAM1" if cam1_still_sees else ("CAM2" if cam2_still_sees else "YOLO")
                                     state['exit_pending']    = False
                                     state['exit_started_at'] = 0
                                     print(f"↩️ EXIT CANCELLED: {state['name']} — {src} ยังเห็นคนอยู่")
@@ -1629,6 +1662,7 @@ def unified_state_machine():
                                 name = state['name']
                                 state['inside']          = False
                                 state['entered_at']      = None
+                                state['entered_at_timestamp'] = None
                                 state['exit_pending']    = False
                                 state['exit_started_at'] = 0
                                 _save_event_capture("EXIT")

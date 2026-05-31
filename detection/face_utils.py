@@ -21,10 +21,10 @@ MIN_INTERCLASS_MARGIN = 0.08   # 2nd-best must be this much worse → reject amb
 # Per-camera recognition profiles — tune thresholds per camera position
 # cam_id: 0=YOLO cam, 1=cam1, 2=cam2 (primary), 3=cam3 (no face rec normally)
 CAM_PROFILE = {
-    0: {"min_size": 28, "sim_thresh": 0.55, "quality": 0.42},   # YOLO cam — overview, relax min_size for far faces
-    1: {"min_size": 25, "sim_thresh": 0.55, "quality": 0.40},   # cam1 — entrance door, relaxed for distance
-    2: {"min_size": 28, "sim_thresh": 0.50, "quality": 0.45},   # cam2 — face cam, lowered to match actual working distance
-    3: {"min_size": 25, "sim_thresh": 0.58, "quality": 0.40},   # cam3 — exit corner, lenient
+    0: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40},   # 攝影機1 — กลางห้อง, faces start small
+    1: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40},   # 攝影機2 — จ่อหน้าประตู, entrance face cam
+    2: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.42},   # 攝影機3 — ด้านข้างพื้นที่หน้าประตู, side view
+    3: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.38},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
 }
 
 _app = None
@@ -128,13 +128,13 @@ def _build_db():
 
 
 def _ensure_db():
+    global _db_building, _db_ready
     if _db_ready:
         return
     with _db_build_lock:
         if _db_ready:
             return
         if _db_building:
-            # Another thread is already rebuilding → wait for it
             return
         _db_building = True
     print(f"⏳ FACE DB: cache miss — triggering rebuild")
