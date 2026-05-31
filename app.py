@@ -713,6 +713,8 @@ def _cleanup_stale_tracks():
 
     # Fire deferred unknown alerts for confirmed-unknown tracks
     with track_buffer_lock:
+        # ถ้ามี track ไหนถูกจำได้แล้ว → ไม่ต้อง alert unknown
+        any_identified = any(tid in track_identity for tid in track_first_seen)
         fire_tids = []
         for tid, first_seen in list(track_first_seen.items()):
             if tid in track_identity:
@@ -721,7 +723,8 @@ def _cleanup_stale_tracks():
             if now - first_seen < UNKNOWN_DEFER_SEC:
                 continue
             # Still alive & still unknown after defer period → fire alert
-            fire_tids.append(tid)
+            if not any_identified:
+                fire_tids.append(tid)
             track_first_seen.pop(tid, None)
 
         stale = [tid for tid, t in track_last_seen.items()
@@ -854,9 +857,9 @@ def face_recognition_loop():
         # Build latest_face_list from track_identity for dashboard
         with track_buffer_lock:
             current_tracks = track_identity.copy()
-        if current_tracks:
-            now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-            with latest_face_lock:
+        now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        with latest_face_lock:
+            if current_tracks:
                 latest_face_list = [
                     {
                         "name":        r.get("name"),
@@ -866,6 +869,8 @@ def face_recognition_loop():
                     }
                     for r in current_tracks.values()
                 ]
+            else:
+                latest_face_list = []
 
         _cleanup_stale_tracks()
 
@@ -1584,16 +1589,17 @@ def unified_state_machine():
                         if cam3 and not state['exit_pending']:
                             state['exit_pending']    = True
                             state['exit_started_at'] = now
-                            print(f"🚶 EXIT PENDING: {state['name']} — รอ Cam2 ยืนยัน")
+                            print(f"🚶 EXIT PENDING: {state['name']} — รอ Cam2/YOLO ยืนยัน")
 
-                        # Stage 2: After delay, check if cam2 still sees them
+                        # Stage 2: After delay, check if cam2 or yolo still sees them
                         if state['exit_pending']:
                             waited = now - state['exit_started_at']
-                            # cam2 still sees = person just walked past, not leaving
+                            yolo_still_sees = now - state['last_seen'].get('yolo', 0) < ENTRY_WINDOW_SEC
                             cam2_still_sees = cam2
+                            still_sees = cam2_still_sees or yolo_still_sees
                             if waited >= EXIT_CONFIRM_DELAY_SEC:
-                                if not cam2_still_sees:
-                                    # cam2 no longer sees → person has left the room
+                                if not still_sees:
+                                    # no camera sees them → person has left the room
                                     dur  = (datetime.now() - state['entered_at']).total_seconds() \
                                            if state['entered_at'] else 0
                                     name = state['name']
@@ -1606,14 +1612,16 @@ def unified_state_machine():
                                         latest_event_type   = "EXIT"
                                         latest_event_person = name
                                     record_exit(name)
-                                    print(f"🚪 EXIT CONFIRMED: {name} (Cam2 ไม่เห็นแล้ว)")
+                                    reason = "Cam2/YOLO ไม่เห็นแล้ว"
+                                    print(f"🚪 EXIT CONFIRMED: {name} ({reason})")
                                     threading.Thread(target=_do_notify_exit,
                                                      args=(name, face_folder, dur), daemon=True).start()
                                 else:
-                                    # cam2 still sees → cancel EXIT
+                                    # still sees → cancel EXIT
+                                    src = "Cam2" if cam2_still_sees else "YOLO"
                                     state['exit_pending']    = False
                                     state['exit_started_at'] = 0
-                                    print(f"↩️ EXIT CANCELLED: {state['name']} — Cam2 ยังเห็นคนอยู่")
+                                    print(f"↩️ EXIT CANCELLED: {state['name']} — {src} ยังเห็นคนอยู่")
                             elif waited > EXIT_MAX_WAIT_SEC:
                                 # Timeout fallback — force EXIT
                                 dur  = (datetime.now() - state['entered_at']).total_seconds() \
@@ -2230,6 +2238,11 @@ def init_system():
         _restore_person_state()
         init_yolo_camera()
         init_surveillance_cameras()
+        # Prebuild FACE DB cache before starting recognition threads
+        from detection.face_utils import _build_db
+        _build_db()
+        print("✅ FACE DB: prebuilt at startup")
+
         t = threading.Thread(target=face_recognition_loop, daemon=True)
         t.start()
         print("✅ FACE: Recognition thread started")

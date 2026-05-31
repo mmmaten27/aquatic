@@ -1359,9 +1359,9 @@
 
         function renderOccupants() {
             const occ = lastOccupantsData;
-            const list = document.getElementById('side-occupants-list');
-            const badge = document.getElementById('side-occupants-badge');
-            const empty = document.getElementById('side-occupants-empty');
+            const list = document.getElementById('occupant-list');
+            const badge = document.getElementById('occupant-count-badge');
+            const empty = document.getElementById('occupant-empty-badge');
             if (occ.length === 0) {
                 list.innerHTML = '<span class="text-slate-400 text-xs">尚無人員在室內</span>';
                 badge.classList.add('hidden');

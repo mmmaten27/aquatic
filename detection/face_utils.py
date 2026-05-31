@@ -32,6 +32,8 @@ _app_lock = threading.Lock()
 _db = {}        # {folder_name: [L2-normalized embedding, ...]}
 _db_lock = threading.Lock()
 _db_ready = False
+_db_building = False
+_db_build_lock = threading.Lock()
 
 
 def _time_to_str(val):
@@ -126,9 +128,19 @@ def _build_db():
 
 
 def _ensure_db():
-    if not _db_ready:
-        print(f"⏳ FACE DB: cache miss — triggering rebuild")
-        _build_db()
+    if _db_ready:
+        return
+    with _db_build_lock:
+        if _db_ready:
+            return
+        if _db_building:
+            # Another thread is already rebuilding → wait for it
+            return
+        _db_building = True
+    print(f"⏳ FACE DB: cache miss — triggering rebuild")
+    _build_db()
+    with _db_build_lock:
+        _db_building = False
 
 
 def recognize_face(img_array, access_rules=None, cam_id=None):

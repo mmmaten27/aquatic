@@ -1,0 +1,108 @@
+===== สรุปสถานะระบบตรวจจับและแสดงผล (31 May 2026) =====
+
+=== หลักการทำงานของระบบ (Logic Overview) ===
+
+1. การตรวจจับคนเข้า-ออก (ENTER/EXIT)
+   - ใช้กล้อง 4 ตัว: YOLO (ภาพรวม), cam1 (ประตูเข้า), cam2 (ใบหน้าในห้อง), cam3 (มุมออก)
+   - Face recognition: ArcFace (InsightFace buffalo_l) + cosine distance
+   - CAM_NO_FACE_RECOGNITION = {3}  → cam3 ใช้ YOLO body detection แทน face rec
+
+2. State Machine (unified_state_machine)
+   - person_state: {face_folder: {inside, entered_at, last_seen{cam_id}, last_confidence, exit_pending, ...}}
+   - ENTER Logic: เมื่อคนอยู่นอก (inside=False)
+       เช็ค last_seen[cam_id] < ENTRY_WINDOW_SEC (12วินาที)
+       เงื่อนไข ENTER:
+         - cam1_solo: cam1 เห็น + confidence >= 0.40
+         - cam2_solo: cam2 เห็น + confidence >= 0.80 (ใช้ไม่ได้เพราะ cam2 ไม่เห็นหน้า)
+         - cross_conf: cam1 + cam2 เห็นพร้อมกัน (ใช้ไม่ได้เพราะ cam2)
+       → ปัจจุบันใช้ cam1_solo เป็นหลัก
+   - EXIT Logic (2-Stage): เมื่อคนอยู่ในห้อง (inside=True)
+       Stage 1: cam3 เห็นคนภายใน EXIT_WINDOW_SEC (8วิ) → exit_pending=True
+       Stage 2: รอ EXIT_CONFIRM_DELAY_SEC (8วิ) แล้วตรวจสอบว่ายังมีคนอยู่ไหม
+         - ก่อนแก้: เช็คแค่ cam2 (cam2_still_sees) → cam2 ใช้ไม่ได้ → EXIT ทุกครั้ง
+         - หลังแก้: เช็ค cam2_still_sees OR yolo_still_sees (last_seen['yolo'] < 12วิ)
+           → ถ้า YOLO ยังเห็นคน → EXIT CANCELLED
+           → ถ้า YOLO + cam2 ไม่เห็นเลย → EXIT CONFIRMED
+       Timeout: EXIT_MAX_WAIT_SEC = 30วิ → force EXIT
+
+3. Voting Mechanism (cam1, cam3)
+   - cam1 ต้องสะสม VOTE_REQUIRED=2 ครั้งภายใน VOTE_WINDOW_SEC=12วิ
+     ก่อน update_sighting() จะถูกเรียก
+   - cam2 ไม่ต้อง vote (update ทันที) แต่ cam2 ใช้ไม่ได้
+   - cam3 ไม่มี face rec → ใช้ YOLO proxy infer
+
+4. Dashboard / Frontend
+   - /api/room/status → person_state[inside=True] → 在室人員
+   - /api/face/latest → latest_face_list (จาก YOLO track_identity) + cam2_face_list
+   - /api/occupancy → room_occupants (ENTER/EXIT event-based)
+
+=== ผลการทดลองเข้า-ออก ===
+
+[ก่อนแก้ - Log วันแรก]
+- cam1 distance=0.729 > threshold=0.575 → จำคนไม่ได้
+- cam2 "no face detected" ตลอด
+- FACE DB rebuild 3-4 รอบ (5-8วินาที/รอบ)
+- STATE: inside=False cam1=False(0.00) ตลอด → ไม่มีทาง ENTER
+- YOLO cam track 1 → unknown alert หลังจาก 8วิ
+- 在室人员 ID ใน JS ไม่ตรงกับ HTML
+
+[หลังขยับกล้อง 1 ครั้ง - เริ่ม ENTER ได้]
+- cam1 distance=0.538 < threshold=0.550 → เริ่มจำคนได้
+- ENTER logged → แต่ EXIT CONFIRMED ทันที → ENTER → EXIT Loop
+- Loop 3 รอบในเวลาไม่กี่นาที → Telegram spam 9 ครั้ง
+
+[หลังแก้โค้ด - ปัจจุบัน]
+- ✅ ENTER ผ่าน cam1 (confidence 0.48-0.53)
+- ✅ EXIT PENDING → แต่ YOLO ยังเห็นคน → EXIT CANCELLED
+- ✅ ระบบไม่ loop ENTER/EXIT ซ้ำ
+- ✅ ใน室人員 ควรแสดงถูกต้อง
+- ✅ FACE DB rebuild แค่ครั้งเดียวตอน startup
+- ❌ cam2 ยังใช้ไม่ได้ (ไม่เห็นใบหน้า)
+- ❌ Telegram notification ส่งทุก ENTER (อาจเยอะไป)
+
+=== ปัญหาที่แก้แล้ว ===
+
+1. "ใน室人員" ไม่แสดงผล
+   - สาเหตุ: JavaScript ใช้ ID side-occupants-list/badge/empty
+     แต่ HTML ใช้ occupant-list/occupant-count-badge/occupant-empty-badge
+   - แก้: เปลี่ยน JS ID ให้ตรงกับ HTML (index.html:1362-1364)
+
+2. Unknown alert (未知人員) ผิด
+   - สาเหตุ: _cleanup_stale_tracks() เช็คทีละ Track-ID
+     แต่ YOLO สร้างหลาย Track-ID ต่อคนเดียว
+     Track 13,15,16,17 ไม่ถูกจำ → alert ทั้งที่ Track 18 จำคนได้
+   - แก้: เพิ่ม any_identified flag ก่อน alert (app.py:718)
+
+3. latest_face_list ค้างคนเก่า
+   - สาเหตุ: อัปเดทเฉพาะเมื่อ current_tracks มีค่า
+     ไม่มี else ล้าง list
+   - แก้: เพิ่ม else: latest_face_list = [] (app.py:872)
+
+4. FACE DB rebuild ซ้ำหลายรอบ
+   - สาเหตุ: _ensure_db() ไม่มี lock → หลาย thread rebuild พร้อมกัน
+   - แก้: เพิ่ม _db_building + _db_build_lock (face_utils.py:34-36, 130-143)
+   - เพิ่ม _build_db() ตอน startup (app.py:2242)
+
+5. EXIT Loop (ENTER → EXIT → ENTER)
+   - สาเหตุ: EXIT ตรวจสอบแค่ cam2_still_sees ซึ่งเป็น False เสมอ
+   - แก้: เพิ่ม yolo_still_sees ในเงื่อนไข (app.py:1597-1599)
+     "no camera sees them → EXIT" / "YOLO still sees → CANCELLED"
+
+=== ปัญหาที่ยังเหลือ ===
+
+1. cam2 ไม่เห็นใบหน้า → ยังพึ่งพา YOLO ตัวเดียวในการยืนยัน presence
+2. Telegram ENTER notification ส่งทุกครั้ง (อาจ spam ถ้าเข้า-ออกบ่อย)
+3. EXIT PENDING → CANCELLED วนซ้ำใน log ขณะที่ cam3 ยังเห็นคน
+
+=== การตั้งค่าที่เกี่ยวข้อง ===
+- ENTRY_WINDOW_SEC       = 12
+- EXIT_WINDOW_SEC        = 8
+- EXIT_CONFIRM_DELAY_SEC = 8
+- EXIT_MAX_WAIT_SEC      = 30
+- CAM2_SOLO_CONFIDENCE   = 0.80
+- VOTE_REQUIRED          = 2
+- VOTE_WINDOW_SEC        = 12
+- UNKNOWN_DEFER_SEC      = 8
+- UNKNOWN_COOLDOWN_SEC   = 60
+- MIN_CONFIDENCE         = 0.50 (detection/config.py)
+- SIMILARITY_THRESHOLD   = 0.55 (detection/face_utils.py)
