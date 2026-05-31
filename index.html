@@ -927,15 +927,24 @@
             fetchTankData(currentTankId);
         }
 
-        // --- 警報系統 ---
+        // --- 警報系統 (Sustained Duration) ---
         let alertCount = 0;
         const alertState = {};
+        const sustainedAlert = {};  // {key: {startTime, alerted1, alerted2}}
+        const SENSOR_ALERT_CONFIG = {
+            ph:   { alert1Min: 30, alert2Min: 120 },
+            temp: { alert1Min: 30, alert2Min: 120 },
+            do:   { alert1Min: 30, alert2Min: 120 },
+        };
 
-        function checkAlert(cardId, value, min, max, alertName, normalClass) {
+        function checkAlert(cardId, value, min, max, alertName, normalClass, tankId, sensorType) {
             const card = document.getElementById(cardId);
             if (!card) return;
             const v = parseFloat(value);
             if (isNaN(v)) return;
+
+            const key = `${tankId}-${sensorType}`;
+            const now = Date.now();
 
             if (v < min || v > max) {
                 card.classList.add('bg-danger');
@@ -944,13 +953,40 @@
                     alertState[cardId] = true;
                     addAlertLog(alertName, value);
                 }
+
+                // Sustained duration tracking
+                if (!sustainedAlert[key]) {
+                    sustainedAlert[key] = { startTime: now, alerted1: false, alerted2: false };
+                }
+
+                const cfg = SENSOR_ALERT_CONFIG[sensorType] || SENSOR_ALERT_CONFIG.ph;
+                const elapsed = now - sustainedAlert[key].startTime;
+                const t1 = cfg.alert1Min * 60 * 1000;
+                const t2 = cfg.alert2Min * 60 * 1000;
+
+                // 2nd alert: >= alert2Min and 1st was already sent
+                if (elapsed >= t2 && sustainedAlert[key].alerted1 && !sustainedAlert[key].alerted2) {
+                    sustainedAlert[key].alerted2 = true;
+                    sendSustainedTelegramAlert(tankId, sensorType, v, 2);
+                    addAlertLog(`魚缸 ${tankId} - ${alertName} (ยังไม่ปกติ > ${cfg.alert2Min} นาที)`, value);
+                }
+                // 1st alert: >= alert1Min
+                else if (elapsed >= t1 && !sustainedAlert[key].alerted1) {
+                    sustainedAlert[key].alerted1 = true;
+                    sendSustainedTelegramAlert(tankId, sensorType, v, 1);
+                }
             } else {
                 card.classList.remove('bg-danger');
-                // amber-gradient will be re-evaluated by analyzeTrend right after
                 if (!card.classList.contains('amber-gradient')) {
                     card.classList.add(normalClass);
                 }
                 alertState[cardId] = false;
+
+                // Recovery notification
+                if (sustainedAlert[key] && (sustainedAlert[key].alerted1 || sustainedAlert[key].alerted2)) {
+                    sendRecoveryTelegramAlert(tankId, sensorType, v);
+                }
+                delete sustainedAlert[key];
             }
         }
 
@@ -1007,10 +1043,9 @@
             badge.classList.remove('hidden');
         }
 
-        // --- ระบบวิเคราะห์แนวโน้ม (Trend Analysis) ---
+        // --- ระบบแจ้งเตือนคงค้าง (Sustained Alert — visual เท่านั้น ไม่มี Telegram) ---
         const trendBuffer = {};
-        const TREND_BUF_SIZE = 12;  // เก็บ 12 ค่าล่าสุด (~60 วินาที)
-        const TREND_WARN_STEPS = 10; // ฉายอนาคตไป 10 ค่า (~50 วินาที)
+        const TREND_BUF_SIZE = 6;  // เก็บ 6 ค่าล่าสุด (~30 วิ) แค่ใช้ UI
 
         function pushTrend(key, value) {
             if (!trendBuffer[key]) trendBuffer[key] = [];
@@ -1018,7 +1053,6 @@
             if (trendBuffer[key].length > TREND_BUF_SIZE) trendBuffer[key].shift();
         }
 
-        // Linear regression slope (y per step)
         function calcSlope(values) {
             const n = values.length;
             if (n < 4) return 0;
@@ -1031,64 +1065,35 @@
             return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
         }
 
-        function analyzeTrend(cardId, trendKey, value, min, max, label, tankId, normalClass) {
+        function analyzeApproach(cardId, trendKey, value, min, max, normalClass) {
             const v = parseFloat(value);
             pushTrend(trendKey, v);
             const buf = trendBuffer[trendKey];
-            if (!buf || buf.length < 5) return;
+            if (!buf || buf.length < 4) return;
 
             const card = document.getElementById(cardId);
             if (!card) return;
 
-            // ถ้าเกินเกณฑ์แล้ว (bg-danger) ให้ลบสีส้มออก ไม่ต้องทำ trend
             if (card.classList.contains('bg-danger')) {
                 card.classList.remove('amber-gradient');
                 return;
             }
 
-            const slope = calcSlope(buf);
-            const projected = v + slope * TREND_WARN_STEPS;
-            const withinRange = v >= min && v <= max;
+            const range = max - min;
+            const margin = range * 0.15;
+            const nearBoundary = (v >= min && v <= min + margin) || (v <= max && v >= max - margin);
 
-            const willBreachMin = withinRange && slope < 0 && projected < min;
-            const willBreachMax = withinRange && slope > 0 && projected > max;
-            const warnKey = `tw-${trendKey}`;
-
-            if (willBreachMin || willBreachMax) {
-                // เปลี่ยนสีการ์ดเป็นสีส้ม
+            if (nearBoundary) {
                 card.classList.remove('plant-gradient', 'fish-gradient', 'water-gradient');
                 card.classList.add('amber-gradient');
-
-                const dir = willBreachMin ? '📉 下降趨勢' : '📈 上升趨勢';
-                const threshold = willBreachMin ? min : max;
-                const stepsToBreath = Math.abs((v - threshold) / slope);
-                const etaSec = Math.max(0, Math.round(stepsToBreath * 5));
-
-                if (!alertState[warnKey]) {
-                    alertState[warnKey] = true;
-                    addTrendAlertLog(`魚缸 ${tankId} ${label}`, value, dir, etaSec);
-                    sendTrendTelegramAlert(tankId, label, value, dir, etaSec);
-                }
             } else {
-                // กลับสีปกติ
                 card.classList.remove('amber-gradient');
                 if (!card.classList.contains('plant-gradient') &&
                     !card.classList.contains('fish-gradient') &&
                     !card.classList.contains('water-gradient')) {
                     card.classList.add(normalClass);
                 }
-                alertState[warnKey] = false;
             }
-        }
-
-        async function sendTrendTelegramAlert(tankId, sensor, value, direction, etaSec) {
-            try {
-                await fetch('/api/send-trend-alert', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tank_id: tankId, sensor, value, direction, eta_sec: etaSec })
-                });
-            } catch (e) { console.error('Trend Telegram error:', e); }
         }
 
         // --- 從 API 取得感測器數據 ---
@@ -1134,16 +1139,16 @@
                 const doFault   = checkSensorFault(`card-do-${tankId}`,   `do-${tankId}`,   doVal, 'water-gradient', 'DO', tankId);
 
                 if (!phFault) {
-                    checkAlert(`card-ph-${tankId}`, ph, r.ph[0], r.ph[1], `魚缸 ${tankId} - pH 超出標準值！`, 'plant-gradient');
-                    analyzeTrend(`card-ph-${tankId}`, `ph-${tankId}`, ph, r.ph[0], r.ph[1], 'pH', tankId, 'plant-gradient');
+                    checkAlert(`card-ph-${tankId}`, ph, r.ph[0], r.ph[1], `魚缸 ${tankId} - pH 超出標準值！`, 'plant-gradient', tankId, 'ph');
+                    analyzeApproach(`card-ph-${tankId}`, `ph-${tankId}`, ph, r.ph[0], r.ph[1], 'plant-gradient');
                 }
                 if (!tempFault) {
-                    checkAlert(`card-temp-${tankId}`, temp, r.temp[0], r.temp[1], `魚缸 ${tankId} - 溫度超出標準值！`, 'fish-gradient');
-                    analyzeTrend(`card-temp-${tankId}`, `temp-${tankId}`, temp, r.temp[0], r.temp[1], '溫度', tankId, 'fish-gradient');
+                    checkAlert(`card-temp-${tankId}`, temp, r.temp[0], r.temp[1], `魚缸 ${tankId} - 溫度超出標準值！`, 'fish-gradient', tankId, 'temp');
+                    analyzeApproach(`card-temp-${tankId}`, `temp-${tankId}`, temp, r.temp[0], r.temp[1], 'fish-gradient');
                 }
                 if (!doFault) {
-                    checkAlert(`card-do-${tankId}`, doVal, r.do[0], r.do[1], `魚缸 ${tankId} - DO 超出標準值！`, 'water-gradient');
-                    analyzeTrend(`card-do-${tankId}`, `do-${tankId}`, doVal, r.do[0], r.do[1], 'DO', tankId, 'water-gradient');
+                    checkAlert(`card-do-${tankId}`, doVal, r.do[0], r.do[1], `魚缸 ${tankId} - DO 超出標準值！`, 'water-gradient', tankId, 'do');
+                    analyzeApproach(`card-do-${tankId}`, `do-${tankId}`, doVal, r.do[0], r.do[1], 'water-gradient');
                 }
             } catch (e) {
                 console.error(`Tank ${tankId} fetch error:`, e);
@@ -1152,7 +1157,7 @@
 
         // --- ระบบตรวจจับเซนเซอร์ขัดข้อง ---
         const zeroCount = {};
-        const ZERO_FAULT_THRESHOLD = 5; // 5 ครั้งติดกัน (~25 วิ) ถือว่าขัดข้อง
+        const ZERO_FAULT_THRESHOLD = 24; // 24 ครั้งติดกัน (~2 นาที) ถือว่าขัดข้อง
 
         function checkSensorFault(cardId, faultKey, value, normalClass, sensorLabel, tankId) {
             const v = parseFloat(value);
@@ -1173,14 +1178,19 @@
                         sendFaultTelegramAlert(tankId, sensorLabel);
                     }
                 }
-                return true; // ค่าเป็น 0 → ไม่ต้องเช็ค alert ปกติ
+                return true;
             } else {
-                // ค่ากลับมาแล้ว → เคลียร์สถานะขัดข้อง
+                // ค่ากลับมา → เคลียร์สถานะ + ส่ง recovery notification
                 if (zeroCount[faultKey] > 0) {
+                    const wasInFault = alertState[`fault-${faultKey}`];
                     zeroCount[faultKey] = 0;
                     card.classList.remove('sensor-fault');
                     card.classList.add(normalClass);
                     alertState[`fault-${faultKey}`] = false;
+
+                    if (wasInFault) {
+                        sendFaultRecoveryTelegramAlert(tankId, sensorLabel);
+                    }
                 }
                 return false;
             }
@@ -1220,6 +1230,45 @@
                     body: JSON.stringify({ tank_id: tankId, sensor: sensorLabel })
                 });
             } catch (e) { console.error('Fault Telegram error:', e); }
+        }
+
+        async function sendFaultRecoveryTelegramAlert(tankId, sensorLabel) {
+            try {
+                const msg = `✅ 感測器恢復正常｜魚缸 ${tankId} - ${sensorLabel}\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
+                await fetch('/api/send-sensor-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+            } catch (e) { console.error('Fault recovery Telegram error:', e); }
+        }
+
+        async function sendSustainedTelegramAlert(tankId, sensorType, value, level) {
+            const names = { ph: 'pH', temp: '溫度', do: 'DO' };
+            const label = names[sensorType] || sensorType;
+            const icon = level === 1 ? '🟡' : '🔴';
+            const note = level === 1 ? 'ค่าเกินเกณฑ์ > 30 นาที' : 'ค่าเกินเกณฑ์ > 2 ชั่วโมง';
+            try {
+                const msg = `${icon} 魚缸 ${tankId} - ${label} = ${value}\n📌 ${note}\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
+                await fetch('/api/send-sensor-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+            } catch (e) { console.error('Sustained Telegram error:', e); }
+        }
+
+        async function sendRecoveryTelegramAlert(tankId, sensorType, value) {
+            const names = { ph: 'pH', temp: '溫度', do: 'DO' };
+            const label = names[sensorType] || sensorType;
+            try {
+                const msg = `✅ 魚缸 ${tankId} - ${label} กลับมาปกติแล้ว (${value})\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
+                await fetch('/api/send-sensor-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+            } catch (e) { console.error('Recovery Telegram error:', e); }
         }
 
         [1, 2, 3].forEach(tid => updateRangeLabels(tid, loadRanges(tid)));

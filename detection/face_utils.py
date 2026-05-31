@@ -6,6 +6,7 @@ import time
 import numpy as np
 import cv2
 from datetime import datetime
+from .log_utils import dprint, iprint
 
 face_lock = threading.Lock()
 FACES_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "faces_db")
@@ -169,27 +170,28 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
             faces = app.get(preprocessed)
 
         if not faces:
-            print(f"⚠️ FACE{tag}: no face detected")
+            dprint(f"⚠️ FACE{tag}: no face detected")
+
             return _unknown()
 
         face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
 
         # Layer 2: face quality gate (per-camera threshold)
         if face.det_score < min_quality:
-            print(f"⚠️ FACE{tag}: low quality det_score={face.det_score:.2f} < {min_quality}")
+            dprint(f"⚠️ FACE{tag}: low quality det_score={face.det_score:.2f} < {min_quality}")
             return _unknown()
 
         # Layer 3: face size gate (soft penalty zone, per-camera min_size)
         fw = face.bbox[2] - face.bbox[0]
         fh = face.bbox[3] - face.bbox[1]
         if fw < min_size or fh < min_size:
-            print(f"⚠️ FACE{tag}: too small ({fw:.0f}×{fh:.0f}px < {min_size}px)")
+            dprint(f"⚠️ FACE{tag}: too small ({fw:.0f}×{fh:.0f}px < {min_size}px)")
             return _unknown()
         size_penalty = 0.0
         if fw < SOFT_SIZE_THRESHOLD or fh < SOFT_SIZE_THRESHOLD:
             ratio = min(fw, fh) / SOFT_SIZE_THRESHOLD
             size_penalty = (1.0 - ratio) * 0.08
-            print(f"📐 FACE{tag}: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px)")
+            dprint(f"📐 FACE{tag}: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px)")
         effective_threshold = sim_thresh + size_penalty
 
         emb = face.embedding.copy().astype(np.float32)
@@ -217,7 +219,7 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
                     second_folder = folder_name
 
         duration = time.time() - t0
-        print(f"🔬 FACE{tag}: best={best_dist:.3f}({best_folder}) 2nd={second_dist:.3f}({second_folder}) | db={db_size} embs | thresh={effective_threshold:.3f} | took={duration:.3f}s")
+        dprint(f"🔬 FACE{tag}: best={best_dist:.3f}({best_folder}) 2nd={second_dist:.3f}({second_folder}) | db={db_size} embs | thresh={effective_threshold:.3f} | took={duration:.3f}s")
 
         if best_dist > effective_threshold or best_folder is None:
             return _unknown()

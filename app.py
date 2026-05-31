@@ -15,12 +15,13 @@ from ultralytics import YOLO
 import re
 import numpy as np
 from detection import MIN_CONFIDENCE
-from detection.config import TELEGRAM_TOKEN, CHAT_ID, COOLDOWN_SECONDS
+from detection.config import TELEGRAM_TOKEN, CHAT_ID, COOLDOWN_SECONDS, ACTIVE_START, ACTIVE_END
 from detection.camera_utils import get_calibrated_indices, get_cameras_with_device_path
 from detection.face_utils import (
     recognize_face, save_face_image, delete_face_folder, clear_face_cache,
     list_face_photos, get_first_photo_path, delete_face_photo, FACES_DB
 )
+from detection.log_utils import dprint, iprint
 
 app = Flask(__name__)
 app.secret_key = 'aquatic_secret_key_2024'
@@ -65,11 +66,12 @@ last_detection_timestamp = "-"
 face_results             = {}
 face_result_lock         = threading.Lock()
 face_pending_frame       = None
-face_pending_items       = []       # list of (track_id, box) instead of just boxes
+face_pending_items       = []
 face_pending_lock        = threading.Lock()
+face_work_event          = threading.Event()
 
 # Track buffer: per track_id keep N recent face crops + identity
-TRACK_BUFFER_SIZE     = 8          # max crops per track
+TRACK_BUFFER_SIZE     = 3          # max crops per track
 TRACK_CLEANUP_TIMEOUT = 5.0        # seconds without sighting → remove track
 UNKNOWN_DEFER_SEC     = 15         # wait N sec before sending "unknown" alert (CAM1 entrance door)
 track_crop_buffer     = {}         # {track_id: [crop_img, ...]}
@@ -107,7 +109,7 @@ PRESENCE_WINDOW_SEC    = 10   # cam2/yolo must see person within N sec → still
 EXIT_WINDOW_SEC        = 8    # cam3 must see person within N sec → EXIT candidate
 EXIT_CONFIRM_DELAY_SEC = 8    # wait N sec for presence to clear before logging EXIT
 EXIT_MAX_WAIT_SEC      = 30   # max timeout for exit confirmation
-UNKNOWN_COOLDOWN_SEC   = 60   # min sec between unknown-person alerts per camera
+UNKNOWN_COOLDOWN_SEC   = 300  # min sec (5 min) between unknown-person alerts per camera
 SURV_DETECT_INTERVAL   = 0.5  # sec: surv detect loop interval
 SURV_FACE_INTERVALS    = {1: 1.0, 2: 1.0, 3: 3.0}  # sec: face rec rate limit per cam (cam2=fast, cam3=no face rec)
 
@@ -116,6 +118,8 @@ person_state      = {}
 person_state_lock = threading.Lock()
 unknown_last_alert = {}  # {cam_id: last_alert_timestamp}
 unknown_alert_lock = threading.Lock()
+unknown_alert_active = {}    # {cam_id: {"alerted_at": float, "left_notified": bool}}
+unknown_last_seen   = {}    # {cam_id: float} — last time any person was detected by cam
 
 # Best-frame buffers: keep up to N frames per surv cam, pick sharpest for recognition
 BEST_FRAME_BUFFER_SIZE = 5
@@ -133,8 +137,12 @@ _vote_lock         = threading.Lock()
 IOU_THRESHOLD       = 0.15  # primary: IoU threshold for cross-frame matching
 CENTER_DIST_LIMIT   = 0.20  # fallback: max center movement as fraction of frame width
 
+# ── Motion Detection (gate YOLO when nothing moves) ─────────
+MOTION_PIXEL_THRESHOLD = 1500   # pixel change count = motion (≈0.5% of 640×480)
+MOTION_FORCED_INTERVAL = 30     # force inference every 30s regardless of motion
+
 # ── Per-camera face-buffer size ────────────────────────────────
-SURV_TRACK_BUFFER_SIZES = {1: 12, 2: 6, 3: 4}  # cam1 backup=more buffer, cam3 no face rec
+SURV_TRACK_BUFFER_SIZES = {1: 4, 2: 3, 3: 2}  # cam1 backup=more buffer, cam3 no face rec
 
 # ── Cameras that skip face recognition (e.g. exit cam sees only legs) ──
 CAM_NO_FACE_RECOGNITION = set()
@@ -145,6 +153,8 @@ yolo_frame       = None
 yolo_frame_count = 0
 yolo_lock        = threading.Lock()
 yolo_online      = False
+yolo_prev_gray   = None
+yolo_last_forced = 0
 
 # ── Surveillance cameras: logical ID → physical index ──────────
 #    Dynamically assigned via camera_utils on startup / reconnect
@@ -297,6 +307,7 @@ def yolo_capture_loop():
     global model, last_telegram_sent, running
     global current_person_count, daily_detection_total, last_detection_timestamp
     global face_pending_frame, face_pending_items, face_recognition_ran_once
+    global yolo_prev_gray, yolo_last_forced
 
     frame_interval = 1.0 / 10   # 10 fps target
     detect_every   = 3
@@ -353,7 +364,24 @@ def yolo_capture_loop():
 
             local_count += 1
 
+            # ── Motion gate: skip YOLO if nothing moved ──
+            run_yolo_now = False
             if model is not None and local_count % detect_every == 0:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                if yolo_prev_gray is not None:
+                    diff = cv2.absdiff(yolo_prev_gray, gray)
+                    _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+                    motion_px = cv2.countNonZero(thresh)
+                else:
+                    motion_px = 999999  # first frame → run
+                yolo_prev_gray = gray
+
+                now_t = time.time()
+                force_run = (now_t - yolo_last_forced) > MOTION_FORCED_INTERVAL
+                run_yolo_now = motion_px > MOTION_PIXEL_THRESHOLD or force_run
+
+            if run_yolo_now:
+                yolo_last_forced = time.time()
                 try:
                     # YOLO cam uses its own model instance — no lock needed
                     results = model.track(img, classes=[0], persist=True, verbose=False)
@@ -375,13 +403,16 @@ def yolo_capture_loop():
 
                 if last_boxes:
                     max_c = max(float(b.conf[0]) for b in last_boxes) if last_boxes else 0
-                    print(f"🔍 CAM[yolo]: detected {len(last_boxes)} person(s), max_conf={max_c:.2f}")
+                    iprint(f"🔍 CAM[yolo]: detected {len(last_boxes)} person(s), max_conf={max_c:.2f}")
+                else:
+                    dprint(f"🔍 CAM[yolo]: no person detected")
 
                 # Trigger face recognition every 5 YOLO detections (~1.5 s)
                 if last_boxes and local_count % (detect_every * 5) == 0:
                     with face_pending_lock:
                         face_pending_frame = img.copy()
                         face_pending_items = list(zip(last_track_ids, last_boxes))
+                        face_work_event.set()
 
                 if last_boxes:
                     now = time.time()
@@ -524,7 +555,7 @@ def _ensure_access_rules():
             for r in rows
         ]
         access_rules_cache_time = time.time()
-        print(f"🔄 ACCESS RULES: refreshed ({len(access_rules_cache)} personnel)")
+        dprint(f"🔄 ACCESS RULES: refreshed ({len(access_rules_cache)} personnel)")
     except Exception as e:
         print(f"⚠️ ACCESS RULES: refresh failed - {e}")
     finally:
@@ -606,7 +637,10 @@ def cleanup_old_captures():
                         pass
 
                 if removed:
-                    print(f"🗑️ CLEANUP: removed {removed} old capture file(s)")
+                    if removed > 0:
+                        iprint(f"🗑️ CLEANUP: removed {removed} old capture file(s)")
+                    else:
+                        dprint(f"🗑️ CLEANUP: removed {removed} old capture file(s)")
 
                 # Stale occupant cleanup (safety net)
                 _cleanup_stale_occupants()
@@ -777,8 +811,10 @@ def face_recognition_loop():
                 face_pending_items = []
 
         if img is None:
-            time.sleep(0.05)
+            face_work_event.wait(timeout=0.5)
             continue
+
+        face_work_event.clear()
 
         _ensure_access_rules()
 
@@ -854,7 +890,7 @@ def face_recognition_loop():
 
                     if not identified:
                         if result["status"] == "unknown":
-                            print(f"⏳ TRACK {tid}: not yet identified (buffered {len(buf)} crops)")
+                            dprint(f"⏳ TRACK {tid}: not yet identified (buffered {len(buf)} crops)")
 
         # Build latest_face_list from track_identity for dashboard
         with track_buffer_lock:
@@ -912,6 +948,9 @@ def surv_detect_loop(cam_id):
     surv_track_ident       = {}  # {track_id: {name, status, confidence}}
     surv_track_first_seen  = {}  # {track_id: timestamp} — deferred alert
 
+    # Per-camera motion detection state
+    surv_prev_gray   = None
+    surv_last_forced = 0
     last_face_time = 0
     # Stagger: each camera starts face rec at different offset (0, 1, 2 sec)
     time.sleep(cam_id * 0.8)
@@ -933,14 +972,29 @@ def surv_detect_loop(cam_id):
                 time.sleep(SURV_DETECT_INTERVAL)
                 continue
 
-            # Person detection — use surv_model (separate from YOLO cam's model)
-            # surv_model uses model() not track() to avoid corrupting YOLO's tracker
-            with model_infer_lock:
-                results = surv_model(img, classes=[0], verbose=False)
-            raw_boxes = [b for b in results[0].boxes if float(b.conf[0]) >= MIN_CONFIDENCE]
+            # ── Motion gate: skip YOLO if nothing moved ──
+            now = time.time()
+            run_surv = False
+            gray_surv = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            if surv_prev_gray is not None:
+                diff = cv2.absdiff(surv_prev_gray, gray_surv)
+                _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+                motion_px = cv2.countNonZero(thresh)
+            else:
+                motion_px = 999999
+            surv_prev_gray = gray_surv
+            force_run = (now - surv_last_forced) > MOTION_FORCED_INTERVAL
+            run_surv = motion_px > MOTION_PIXEL_THRESHOLD or force_run
+
+            # Person detection — only if motion detected
+            raw_boxes = []
+            if run_surv:
+                surv_last_forced = now
+                with model_infer_lock:
+                    results = surv_model(img, classes=[0], verbose=False)
+                raw_boxes = [b for b in results[0].boxes if float(b.conf[0]) >= MIN_CONFIDENCE]
 
             # Match current detections to previous tracks via IoU
-            now = time.time()
             box_xyxy = [b.xyxy[0] for b in raw_boxes]
             match = _match_boxes(prev_tracks, box_xyxy)
             prev_tracks = [(box_xyxy[ci], match[ci]) for ci in sorted(match.keys())]
@@ -966,10 +1020,26 @@ def surv_detect_loop(cam_id):
                 # Cleanup stale tracks
                 surv_track_crops = {tid: buf for tid, buf in surv_track_crops.items()
                                     if tid in surv_track_ident}
+
+                # Unknown-exit: previously alerted unknown person no longer detected
+                if cam_id == 1 and unknown_alert_active.get(cam_id, {}).get("alerted_at"):
+                    state = unknown_alert_active[cam_id]
+                    no_detect_for = now - unknown_last_seen.get(cam_id, now)
+                    if no_detect_for >= 30 and not state.get("left_notified"):
+                        unknown_alert_active[cam_id]["left_notified"] = True
+                        _do_notify_unknown_left(cam_id)
+
                 time.sleep(SURV_DETECT_INTERVAL)
                 continue
 
-            print(f"🔍 CAM{cam_id}: detected {len(raw_boxes)} person(s), max_conf={max_conf:.2f}, sharpness={sharpness:.2f}, score={score:.3f}")
+            if raw_boxes:
+                iprint(f"🔍 CAM{cam_id}: detected {len(raw_boxes)} person(s), max_conf={max_conf:.2f}, sharpness={sharpness:.2f}, score={score:.3f}")
+            else:
+                dprint(f"🔍 CAM{cam_id}: detected 0 person(s)")
+
+            # Track last detection time per camera (for unknown-exit logic)
+            if cam_id == 1:
+                unknown_last_seen[cam_id] = now
 
             # ── Select best-scoring frame from buffer for face recognition ──
             rec_img = img
@@ -982,7 +1052,7 @@ def surv_detect_loop(cam_id):
                         rec_source = f"best({best_entry[0]:.3f})"
                     else:
                         rec_source = f"current(best_in_buffer={best_entry[0]:.3f}<=0.5)"
-            print(f"📸 CAM{cam_id}: frame source={rec_source}, buffer_size={len(best_frame_buffers[cam_id])}")
+            dprint(f"📸 CAM{cam_id}: frame source={rec_source}, buffer_size={len(best_frame_buffers[cam_id])}")
 
             # ── Per-track face recognition with crop buffer ──
             identified_any = False
@@ -1046,7 +1116,7 @@ def surv_detect_loop(cam_id):
                             surv_track_first_seen.pop(tid, None)
                             identified_any = True
                             final_result   = result2
-                            print(f"👁️  CAM{cam_id} TRACK {tid}: identified via buffer[{idx}] as {n2} ({s2})")
+                            dprint(f"👁️  CAM{cam_id} TRACK {tid}: identified via buffer[{idx}] as {n2} ({s2})")
                             break
 
             # ── Feed into state machine + deferred unknown alert ──
@@ -1127,62 +1197,10 @@ def generate_yolo_stream():
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + f + b'\r\n')
             else:
-                time.sleep(0.01)
+                time.sleep(0.05)
     except GeneratorExit:
         pass
 
-
-def init_yolo_camera():
-    global yolo_cap, yolo_online
-    print(f"\n🎯 初始化 YOLO 攝影機 (index {YOLO_CAM_IDX})...")
-    try:
-        c = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
-        if not c.isOpened():
-            print(f"  ⚠️  YOLO CAM (index {YOLO_CAM_IDX}): 未找到")
-            return
-        c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-        c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        c.set(cv2.CAP_PROP_FPS,          10)
-        c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
-        yolo_cap    = c
-        yolo_online = True
-        t = threading.Thread(target=yolo_capture_loop, daemon=True)
-        t.start()
-        print(f"  ✅ YOLO CAM (index {YOLO_CAM_IDX}): Online")
-    except Exception as e:
-        print(f"  ❌ YOLO CAM: Error - {e}")
-
-
-def init_surveillance_cameras():
-    global surv_caps, surv_online
-    print("\n📡 初始化監控攝影機...")
-    for cam_id in SURV_IDS:
-        phys_idx = SURV_CAM_IDX[cam_id]
-        try:
-            c = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
-            if c.isOpened():
-                c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-                c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                c.set(cv2.CAP_PROP_FPS,          5)
-                c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
-                # Flush initial DirectShow frames — A4Tech cameras return black frames
-                # for the first ~1 second before AGC/AWB stabilises.
-                _flush_camera(c, n=20)
-                surv_caps[cam_id]   = c
-                surv_online[cam_id] = True
-                t = threading.Thread(target=surv_capture_loop,
-                                     args=(cam_id, phys_idx), daemon=True)
-                t.start()
-                print(f"  ✅ 攝影機 {cam_id} (index {phys_idx}): Online")
-            else:
-                surv_online[cam_id] = False
-                c.release()
-                print(f"  ⚠️  攝影機 {cam_id} (index {phys_idx}): 未找到 (Offline)")
-            # Stagger camera opens — DirectShow can reject rapid sequential opens
-            time.sleep(0.5)
-        except Exception as e:
-            surv_online[cam_id] = False
-            print(f"  ❌ 攝影機 {cam_id}: Error - {e}")
 
 def generate_surv_stream(cam_id):
     last_count = -1
@@ -1200,7 +1218,7 @@ def generate_surv_stream(cam_id):
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             else:
-                time.sleep(0.01)
+                time.sleep(0.05)
     except GeneratorExit:
         pass
 
@@ -1392,6 +1410,9 @@ def update_unknown_sighting(cam_id, frame_img=None):
             return
         unknown_last_alert[cam_id] = now
 
+    with unknown_alert_lock:
+        unknown_alert_active[cam_id] = {"alerted_at": now, "left_notified": False}
+
     img_path  = _save_capture(frame_img, f"unknown_cam{cam_id}")
     cam_label = {1: "入口", 2: "室內", 3: "出口", 'yolo': "全景"}.get(cam_id, str(cam_id))
     msg = (f"⚠️ 發現不明人士！\n"
@@ -1400,6 +1421,18 @@ def update_unknown_sighting(cam_id, frame_img=None):
            f"📍 IoT Lab")
     send_telegram_notification(msg, img_path)
     print(f"⚠️ UNKNOWN: cam{cam_id} alert sent")
+
+
+def _do_notify_unknown_left(cam_id):
+    """Send notification when a previously-alerted unknown person has left the room."""
+    ts = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    cam_label = {1: "入口", 2: "室內", 3: "出口", 'yolo': "全景"}.get(cam_id, str(cam_id))
+    msg = (f"✅ บุคคลนิรนามออกจากห้องแล้ว\n"
+           f"📷 攝影機: {cam_label}\n"
+           f"🕐 {ts}\n"
+           f"📍 IoT Lab")
+    send_telegram_notification(msg)
+    print(f"✅ UNKNOWN LEFT: cam{cam_id} — ไม่มีบุคคลนิรนามในห้องอีกต่อไป")
 
 
 def _cast_vote(cam_id, face_folder):
@@ -1418,11 +1451,11 @@ def _cast_vote(cam_id, face_folder):
         count = len(timestamps)
     reached = count >= VOTE_REQUIRED
     if reached:
-        print(f"🗳️  CAM{cam_id} VOTE THRESHOLD REACHED: {face_folder} ({count}/{VOTE_REQUIRED}) — proceeding")
+        iprint(f"🗳️  CAM{cam_id} VOTE THRESHOLD REACHED: {face_folder} ({count}/{VOTE_REQUIRED}) — proceeding")
         with _vote_lock:
             bucket[face_folder] = []  # reset votes after threshold
     else:
-        print(f"🗳️  CAM{cam_id} vote: {face_folder} = {count}/{VOTE_REQUIRED}")
+        dprint(f"🗳️  CAM{cam_id} vote: {face_folder} = {count}/{VOTE_REQUIRED}")
     return reached
 
 
@@ -1441,18 +1474,34 @@ def _do_notify_enter(name, face_folder):
         _last_enter_notify[face_folder] = time.time()
 
     ts  = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    now_str = datetime.now().strftime("%H:%M")
+
     # Check authorization status
     rule = next(
         (r for r in access_rules_cache if r.get("face_folder") == face_folder),
         None,
     )
-    now_str = datetime.now().strftime("%H:%M")
     is_active = rule.get("is_active", True) if rule else True
     start = rule.get("access_start", "00:00") if rule else "00:00"
     end   = rule.get("access_end",   "23:59") if rule else "23:59"
     authorized = is_active and (start <= now_str <= end)
-    icon = "✅" if authorized else "⚠️"
-    status_tag = f" ({'授權' if authorized else '未授權'})"
+    in_business_hours = ACTIVE_START <= now_str <= ACTIVE_END
+
+    # Case 1: Authorized entry during work hours → no Telegram (dashboard only)
+    if authorized and in_business_hours:
+        log_room_event("ENTER", name, face_folder, 1)
+        print(f"🚪 ENTER logged: {name} (Telegram skipped — work hours)")
+        return
+
+    # Case 2: Authorized but outside work hours → notify after-hours
+    if authorized and not in_business_hours:
+        icon = "⚠️"
+        status_tag = " (นอกเวลาทำงาน)"
+    # Case 3: Unauthorized (person deactivated or wrong time slot)
+    else:
+        icon = "🚨"
+        status_tag = " (ไม่ได้รับอนุญาต)"
+
     msg = f"{icon} {name} 進入實驗室{status_tag}\n🕐 {ts}\n📍 IoT Lab"
     send_telegram_notification(msg)
     log_room_event("ENTER", name, face_folder, 1)
@@ -1581,7 +1630,7 @@ def unified_state_machine():
                         cam1_solo  = cam1 and cam1_conf >= 0.40
                         cam2_solo  = cam2 and cam2_conf >= CAM2_SOLO_CONFIDENCE
                         cross_conf = cam1 and cam2
-                        print(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} cross={cross_conf}")
+                        dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} cross={cross_conf}")
                         if cam1_solo or cam2_solo or cross_conf:
                             state['inside']       = True
                             state['entered_at']   = datetime.now()
@@ -1806,6 +1855,20 @@ def send_trend_alert():
         return jsonify({'ok': True})
     except Exception as e:
         print(f"❌ TREND ALERT: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/send-sensor-message', methods=['POST'])
+@login_required
+def send_sensor_message():
+    try:
+        data = request.get_json()
+        message = data.get('message', '')
+        if message:
+            send_telegram_notification(message)
+            return jsonify({'ok': True})
+        return jsonify({'error': 'empty message'}), 400
+    except Exception as e:
+        print(f"❌ SENSOR MSG: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/sensor-data')
