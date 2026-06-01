@@ -91,7 +91,7 @@ cam2_face_lock            = threading.Lock()
 
 # Event capture system — store correct camera images per event type
 entry_event_capture  = None   # cam2 frame saved when ENTER fires
-exit_event_capture   = None   # YOLO cam frame saved when EXIT fires
+exit_event_capture   = None   # cam3 frame saved when EXIT fires
 latest_event_type    = None   # 'ENTER' or 'EXIT' — web picks right image
 latest_event_person  = None   # name of person who triggered the event
 event_capture_lock   = threading.Lock()
@@ -177,6 +177,58 @@ def refresh_camera_indices():
         print(f"⚠️ Camera index refresh failed: {e}")
 
 refresh_camera_indices()
+
+def init_yolo_camera():
+    """Initialize or reinitialize the YOLO camera."""
+    global yolo_cap, yolo_online
+    try:
+        if yolo_cap is not None:
+            yolo_cap.release()
+        c = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
+        if c.isOpened():
+            c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+            c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+            _flush_camera(c)
+            yolo_cap    = c
+            yolo_online = True
+            print(f"  ✅ YOLO CAM (index {YOLO_CAM_IDX}): Online")
+        else:
+            c.release()
+            print(f"  ⚠️  YOLO CAM (index {YOLO_CAM_IDX}): 未找到")
+    except Exception as e:
+        print(f"  ❌ YOLO CAM: Error - {e}")
+        yolo_online = False
+
+
+def init_surveillance_cameras():
+    """Initialize all surveillance cameras (1, 2, 3)."""
+    global surv_caps, surv_online
+    for cam_id in SURV_IDS:
+        phys_idx = SURV_CAM_IDX.get(cam_id)
+        if phys_idx is None:
+            print(f"  ⚠️  攝影機 {cam_id}: no index assigned")
+            continue
+        try:
+            if surv_caps.get(cam_id) is not None:
+                surv_caps[cam_id].release()
+            c = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
+            if c.isOpened():
+                c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+                c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                c.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                _flush_camera(c)
+                surv_caps[cam_id]   = c
+                surv_online[cam_id] = True
+                print(f"  ✅ 攝影機 {cam_id} (index {phys_idx}): Online")
+            else:
+                c.release()
+                print(f"  ⚠️  攝影機 {cam_id} (index {phys_idx}): 未找到 (Offline)")
+        except Exception as e:
+            print(f"  ❌ 攝影機 {cam_id}: Error - {e}")
+            surv_online[cam_id] = False
+
+
 surv_caps         = {}
 surv_frames       = {}
 surv_frame_counts = {i: 0 for i in SURV_IDS}
@@ -278,10 +330,9 @@ def surv_capture_loop(cam_id, phys_idx):
 
             consecutive_fail = 0
 
-            # Skip obviously-black frames (DirectShow warm-up artifact)
-            if img.mean() < 2.0:
-                time.sleep(0.05)
-                continue
+            # Debug: log frame mean for cameras 2,3
+            if cam_id >= 2 and surv_frame_counts.get(cam_id, -1) < 5:
+                print(f"📊 SURV CAM{cam_id}: mean={img.mean():.2f} shape={img.shape}")
 
             # Store raw frame for entry/exit event captures
             with event_capture_lock:
@@ -292,6 +343,8 @@ def surv_capture_loop(cam_id, phys_idx):
                 with surv_locks[cam_id]:
                     surv_frames[cam_id]       = buf.tobytes()
                     surv_frame_counts[cam_id] += 1
+                if surv_frame_counts[cam_id] <= 3:
+                    print(f"📸 SURV CAM{cam_id}: frame #{surv_frame_counts[cam_id]} stored (size={len(buf)}B)")
 
             elapsed = time.time() - t0
             sleep_t = frame_interval - elapsed
@@ -1168,12 +1221,16 @@ def surv_detect_loop(cam_id):
                                  args=(img.copy(),), daemon=True).start()
                 now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
                 with cam2_face_lock:
-                    cam2_face_list = [{
-                        "name":        final_result.get("name") if final_result else None,
-                        "status":      final_result.get("status", "unknown") if final_result else "unknown",
-                        "confidence":  final_result.get("confidence", 0.0) if final_result else 0.0,
-                        "detected_at": now_str,
-                    }]
+                    cam2_face_list = [
+                        {
+                            "name":        surv_track_ident[tid].get("name"),
+                            "status":      surv_track_ident[tid].get("status", "unknown"),
+                            "confidence":  surv_track_ident[tid].get("confidence", 0.0),
+                            "detected_at": now_str,
+                        }
+                        for tid in track_ids
+                        if tid in surv_track_ident
+                    ]
 
         except Exception as e:
             print(f"❌ SURV DETECT cam{cam_id}: {e}")
@@ -1204,12 +1261,21 @@ def generate_yolo_stream():
 
 def generate_surv_stream(cam_id):
     last_count = -1
+    _dbg = 0
     try:
         while running:
-            if not surv_online.get(cam_id):
+            online = surv_online.get(cam_id)
+            if not online:
+                if _dbg < 3:
+                    print(f"🎥 CAM{cam_id} gen: surv_online=False — waiting")
+                    _dbg += 1
                 time.sleep(0.1)
                 continue
             count = surv_frame_counts.get(cam_id, 0)
+            fsize = len(surv_frames.get(cam_id, b'')) if count > 0 else 0
+            if _dbg < 3:
+                print(f"🎥 CAM{cam_id} gen: count={count} last={last_count} online={online} fsize={fsize}")
+                _dbg += 1
             if count != last_count:
                 last_count = count
                 with surv_locks[cam_id]:
@@ -1586,7 +1652,7 @@ def _save_event_capture(event_type):
     """
     Save the latest event capture image from the correct camera.
     ENTER → save cam1's frame (entrance door, index 1 = 攝影機 2 in UI)
-    EXIT  → save YOLO cam's frame (door overview, index 0 = 攝影機 1 in UI)
+    EXIT  → save cam3's frame (exit cam, index 3 = 攝影機 4 in UI)
     """
     global entry_event_capture, exit_event_capture, latest_event_type
     captures_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1601,9 +1667,9 @@ def _save_event_capture(event_type):
                 cv2.imwrite(path, frame)
                 entry_event_capture = path
         elif event_type == "EXIT":
-            frame = latest_raw_frames.get('yolo')
+            frame = latest_raw_frames.get(3)
             if frame is not None:
-                path = os.path.join(captures_dir, f"exit_yolo_{ts}.jpg")
+                path = os.path.join(captures_dir, f"exit_cam3_{ts}.jpg")
                 cv2.imwrite(path, frame)
                 exit_event_capture = path
 
@@ -2339,6 +2405,15 @@ def init_system():
         from detection.face_utils import _build_db
         _build_db()
         print("✅ FACE DB: prebuilt at startup")
+
+        # Start camera capture threads (read frames from hardware)
+        t_yolo = threading.Thread(target=yolo_capture_loop, daemon=True)
+        t_yolo.start()
+        print("✅ YOLO: capture loop started")
+        for cid, pidx in SURV_CAM_IDX.items():
+            t_surv = threading.Thread(target=surv_capture_loop, args=(cid, pidx), daemon=True)
+            t_surv.start()
+            print(f"✅ SURV CAM{cid}: capture loop started (index {pidx})")
 
         t = threading.Thread(target=face_recognition_loop, daemon=True)
         t.start()
