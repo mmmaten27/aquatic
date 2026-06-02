@@ -191,7 +191,7 @@ def init_yolo_camera():
     try:
         if yolo_cap is not None:
             yolo_cap.release()
-        c = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
+        c = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_MSMF)
         if c.isOpened():
             c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
             c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -219,7 +219,7 @@ def init_surveillance_cameras():
         try:
             if surv_caps.get(cam_id) is not None:
                 surv_caps[cam_id].release()
-            c = cv2.VideoCapture(phys_idx, cv2.CAP_DSHOW)
+            c = cv2.VideoCapture(phys_idx, cv2.CAP_MSMF)
             if c.isOpened():
                 c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -284,7 +284,7 @@ def surv_capture_loop(cam_id, phys_idx):
                     refresh_camera_indices()
                     cur_idx = SURV_CAM_IDX.get(cam_id, phys_idx)
                     print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 嘗試重新初始化...")
-                    c = cv2.VideoCapture(cur_idx, cv2.CAP_DSHOW)
+                    c = cv2.VideoCapture(cur_idx, cv2.CAP_MSMF)
                     if c.isOpened():
                         c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                         c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -322,7 +322,7 @@ def surv_capture_loop(cam_id, phys_idx):
                 surv_caps[cam_id] = None
                 refresh_camera_indices()
                 cur_idx = SURV_CAM_IDX.get(cam_id, phys_idx)
-                new_cap = cv2.VideoCapture(cur_idx, cv2.CAP_DSHOW)
+                new_cap = cv2.VideoCapture(cur_idx, cv2.CAP_MSMF)
                 if new_cap.isOpened():
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -407,7 +407,7 @@ def yolo_capture_loop():
                 now = time.time()
                 if last_frame_time > 0 and (now - last_frame_time) > 3:
                     print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 強制重新連接 (逾時 {now - last_frame_time:.1f}s)")
-                new_cap = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_DSHOW)
+                new_cap = cv2.VideoCapture(YOLO_CAM_IDX, cv2.CAP_MSMF)
                 if new_cap.isOpened():
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
