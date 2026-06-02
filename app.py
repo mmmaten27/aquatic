@@ -24,7 +24,10 @@ from detection.face_utils import (
 from detection.log_utils import dprint, iprint
 
 app = Flask(__name__)
-app.secret_key = 'aquatic_secret_key_2024'
+import os as _os
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv()
+app.secret_key = _os.getenv('SECRET_KEY', 'aquatic_secret_key_2024')
 
 # Database configuration
 DB_CONFIG = {
@@ -104,7 +107,7 @@ STALE_OCCUPANT_SEC = 300  # ถ้าคนไม่ถูก detect นาน�
 
 # ── Unified Access Control ─────────────────────────────────────
 ENTRY_WINDOW_SEC       = 12   # both cam1+cam2 must see person within N sec → ENTER
-CAM2_SOLO_CONFIDENCE   = 0.80 # if cam2 sees with confidence >= this, ENTER without waiting cam1
+CAM2_SOLO_CONFIDENCE   = 0.55 # if cam2 sees with confidence >= this, ENTER without waiting cam1
 PRESENCE_WINDOW_SEC    = 10   # cam2/yolo must see person within N sec → still inside
 EXIT_WINDOW_SEC        = 8    # cam3 must see person within N sec → EXIT candidate
 EXIT_CONFIRM_DELAY_SEC = 8    # wait N sec for presence to clear before logging EXIT
@@ -112,6 +115,10 @@ EXIT_MAX_WAIT_SEC      = 30   # max timeout for exit confirmation
 UNKNOWN_COOLDOWN_SEC   = 300  # min sec (5 min) between unknown-person alerts per camera
 SURV_DETECT_INTERVAL   = 0.5  # sec: surv detect loop interval
 SURV_FACE_INTERVALS    = {1: 1.0, 2: 1.0, 3: 3.0}  # sec: face rec rate limit per cam (cam2=fast, cam3=no face rec)
+
+# ── Multi-frame voting: force-accept if face rec can't decide but keeps seeing same candidate ──
+SURV_VOTE_CAMS        = {1}         # which cameras use voting (CAM1 entrance = ambiguous-prone)
+SURV_VOTE_THRESHOLD   = {1: 2}      # N consistent frames → force accept (cam1=2)
 
 # person_state: {face_folder: {name, inside, entered_at, last_seen, exit_pending, exit_started_at}}
 person_state      = {}
@@ -134,7 +141,7 @@ _vote_records      = {1: {}, 3: {}}   # {cam_id: {face_folder: [timestamps]}}
 _vote_lock         = threading.Lock()
 
 # ── IoU Tracking ───────────────────────────────────────────────
-IOU_THRESHOLD       = 0.15  # primary: IoU threshold for cross-frame matching
+IOU_THRESHOLD       = 0.25  # primary: IoU threshold for cross-frame matching
 CENTER_DIST_LIMIT   = 0.20  # fallback: max center movement as fraction of frame width
 
 # ── Motion Detection (gate YOLO when nothing moves) ─────────
@@ -142,7 +149,7 @@ MOTION_PIXEL_THRESHOLD = 1500   # pixel change count = motion (≈0.5% of 640×4
 MOTION_FORCED_INTERVAL = 30     # force inference every 30s regardless of motion
 
 # ── Per-camera face-buffer size ────────────────────────────────
-SURV_TRACK_BUFFER_SIZES = {1: 4, 2: 3, 3: 2}  # cam1 backup=more buffer, cam3 no face rec
+SURV_TRACK_BUFFER_SIZES = {1: 4, 2: 5, 3: 2}  # cam1 backup=more buffer, cam3 no face rec
 
 # ── Cameras that skip face recognition (e.g. exit cam sees only legs) ──
 CAM_NO_FACE_RECOGNITION = set()
@@ -1000,11 +1007,14 @@ def surv_detect_loop(cam_id):
     surv_track_crops       = {}  # {track_id: [crop_img, ...]}
     surv_track_ident       = {}  # {track_id: {name, status, confidence}}
     surv_track_first_seen  = {}  # {track_id: timestamp} — deferred alert
+    surv_vote_counts       = {}  # {candidate_folder: int} — multi-frame voting count
+    surv_vote_tid_map      = {}  # {candidate_folder: track_id} — which track to tag
+    surv_vote_last_seen    = {}  # {candidate_folder: timestamp} — for vote expiry
 
     # Per-camera motion detection state
     surv_prev_gray   = None
     surv_last_forced = 0
-    last_face_time = 0
+    last_face_time   = {}   # {track_id: timestamp} — per-track rate limit
     # Stagger: each camera starts face rec at different offset (0, 1, 2 sec)
     time.sleep(cam_id * 0.8)
 
@@ -1120,17 +1130,17 @@ def surv_detect_loop(cam_id):
                     surv_track_ident[tid] = {"name": None, "status": "unknown", "confidence": 0.0}
                     continue
 
-                # Rate-limit face recognition per camera
-                face_interval = SURV_FACE_INTERVALS.get(cam_id, 3.0)
-                if now - last_face_time < face_interval:
-                    continue
-                last_face_time = now
-
-                # Already identified in this camera session → skip
+                # Already identified in this camera session → use cached result (bypass rate-limit)
                 if tid in surv_track_ident:
                     identified_any = True
                     final_result   = surv_track_ident[tid]
                     continue
+
+                # Rate-limit NEW face recognition attempts per track
+                face_interval = SURV_FACE_INTERVALS.get(cam_id, 3.0)
+                if now - last_face_time.get(tid, 0) < face_interval:
+                    continue
+                last_face_time[tid] = now
 
                 # Crop head region (from best available frame)
                 face_img, ok = _crop_face_from_box(rec_img, box)
@@ -1140,6 +1150,7 @@ def surv_detect_loop(cam_id):
                 result = recognize_face(face_img, access_rules_cache, cam_id=cam_id)
                 r_name   = result.get("name")
                 r_status = result.get("status", "unknown")
+                last_face_result = result  # capture for multi-frame voting
 
                 if r_name and r_status != "unknown":
                     surv_track_ident[tid] = result
@@ -1161,6 +1172,7 @@ def surv_detect_loop(cam_id):
                     # Retry all buffered crops
                     for idx, old_crop in enumerate(buf):
                         result2 = recognize_face(old_crop, access_rules_cache, cam_id=cam_id)
+                        last_face_result = result2  # update with latest attempt
                         n2 = result2.get("name")
                         s2 = result2.get("status", "unknown")
                         if n2 and s2 != "unknown":
@@ -1172,21 +1184,60 @@ def surv_detect_loop(cam_id):
                             dprint(f"👁️  CAM{cam_id} TRACK {tid}: identified via buffer[{idx}] as {n2} ({s2})")
                             break
 
+                    # ── Multi-frame voting for ambiguous cameras (CAM1) ──
+                    # If face rec keeps rejecting due to ambiguous margin but
+                    # consistently sees the same candidate → force-accept
+                    if not identified_any and cam_id in SURV_VOTE_CAMS:
+                        candidate = last_face_result.get("candidate")
+                        cand_conf = last_face_result.get("candidate_confidence", 0.0)
+                        if candidate:
+                            surv_vote_counts[candidate] = surv_vote_counts.get(candidate, 0) + 1
+                            surv_vote_tid_map[candidate] = tid
+                            surv_vote_last_seen[candidate] = now
+                            vote_thresh = SURV_VOTE_THRESHOLD.get(cam_id, 3)
+                            if surv_vote_counts[candidate] >= vote_thresh:
+                                rule_vote = next(
+                                    (r for r in access_rules_cache if r.get("face_folder") == candidate),
+                                    None
+                                )
+                                forced_name = rule_vote.get("name", candidate) if rule_vote else candidate
+                                if rule_vote:
+                                    now_s = datetime.now().strftime("%H:%M")
+                                    start = rule_vote.get("access_start", "00:00")
+                                    end = rule_vote.get("access_end", "23:59")
+                                    forced_status = "authorized" if start <= now_s <= end else "unauthorized"
+                                else:
+                                    forced_status = "authorized"
+                                surv_track_ident[tid] = {"name": forced_name, "status": forced_status, "confidence": cand_conf}
+                                identified_any = True
+                                final_result = surv_track_ident[tid]
+                                surv_vote_counts.clear()
+                                surv_vote_tid_map.clear()
+                                surv_vote_last_seen.clear()
+                                print(f"🗳️  CAM{cam_id} VOTE FORCE: {forced_name} ({vote_thresh} votes) — bypassing ambiguous reject")
+                                dprint(f"🗳️  CAM{cam_id} vote details: candidate={candidate}, confidence={cand_conf}")
+                        # Clean stale votes (older than 15s)
+                        for vc in list(surv_vote_last_seen.keys()):
+                            if now - surv_vote_last_seen[vc] > 15:
+                                surv_vote_counts.pop(vc, None)
+                                surv_vote_tid_map.pop(vc, None)
+                                surv_vote_last_seen.pop(vc, None)
+
             # ── Feed into state machine + deferred unknown alert ──
             name   = final_result.get("name")   if final_result else None
             status = final_result.get("status") if final_result else "unknown"
 
             # ── CAM3 special: use YOLO body detection as EXIT trigger proxy ──
             if cam_id == 3 and not identified_any and track_ids:
-                # CAM3 detected someone via YOLO but can't do face rec
-                # → infer identity from the single inside occupant (if any)
+                # CAM3 detected N people via YOLO but can't do face rec
+                # → trigger exit sighting for up to N inside occupants
                 with person_state_lock:
                     inside = [(ff, st["name"]) for ff, st in person_state.items()
                               if st.get("inside")]
-                if len(inside) == 1:
-                    ff, nm = inside[0]
+                n_detected = len(track_ids)
+                for ff, nm in inside[:n_detected]:
                     update_sighting(ff, nm, 3, confidence=0.0)
-                    print(f"🚪 CAM3: inferred {nm} at exit (YOLO proxy)")
+                    print(f"🚪 CAM3: inferred {nm} at exit (YOLO proxy, {n_detected} detected)")
 
             if not name or status == "unknown":
                 # Only fire unknown alert if we actually attempted face recognition
@@ -1493,7 +1544,7 @@ def _do_notify_unknown_left(cam_id):
     """Send notification when a previously-alerted unknown person has left the room."""
     ts = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     cam_label = {1: "入口", 2: "室內", 3: "出口", 'yolo': "全景"}.get(cam_id, str(cam_id))
-    msg = (f"✅ บุคคลนิรนามออกจากห้องแล้ว\n"
+    msg = (f"✅ 不明人士已離開\n"
            f"📷 攝影機: {cam_label}\n"
            f"🕐 {ts}\n"
            f"📍 IoT Lab")
@@ -1562,11 +1613,11 @@ def _do_notify_enter(name, face_folder):
     # Case 2: Authorized but outside work hours → notify after-hours
     if authorized and not in_business_hours:
         icon = "⚠️"
-        status_tag = " (นอกเวลาทำงาน)"
+        status_tag = " (非上班時間)"
     # Case 3: Unauthorized (person deactivated or wrong time slot)
     else:
         icon = "🚨"
-        status_tag = " (ไม่ได้รับอนุญาต)"
+        status_tag = " (未授權進入)"
 
     msg = f"{icon} {name} 進入實驗室{status_tag}\n🕐 {ts}\n📍 IoT Lab"
     send_telegram_notification(msg)
@@ -1689,15 +1740,18 @@ def unified_state_machine():
                     cam2      = now - state['last_seen'].get(2,      0) < ENTRY_WINDOW_SEC
                     cam3      = now - state['last_seen'].get(3,      0) < EXIT_WINDOW_SEC
 
-                    # ── ENTER: Cam1 จ่อประตู alone, Cam2+Cam1 cross-confirm, or Cam2 solo ──
+                    # ── ENTER: Cam1 alone, Cam2+Cam1 cross-confirm, Cam2 solo, or YOLO solo ──
                     if not state['inside']:
                         cam1_conf  = state.get('last_confidence', {}).get(1, 0.0)
                         cam2_conf  = state.get('last_confidence', {}).get(2, 0.0)
-                        cam1_solo  = cam1 and cam1_conf >= 0.40
+                        yolo_seen  = now - state['last_seen'].get('yolo', 0) < ENTRY_WINDOW_SEC
+                        yolo_conf  = state.get('last_confidence', {}).get('yolo', 0.0)
+                        cam1_solo  = cam1 and cam1_conf >= 0.50
                         cam2_solo  = cam2 and cam2_conf >= CAM2_SOLO_CONFIDENCE
+                        yolo_solo  = yolo_seen and yolo_conf >= 0.60
                         cross_conf = cam1 and cam2
-                        dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} cross={cross_conf}")
-                        if cam1_solo or cam2_solo or cross_conf:
+                        dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) yolo={yolo_seen}({yolo_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} yolo_solo={yolo_solo} cross={cross_conf}")
+                        if cam1_solo or cam2_solo or cross_conf or yolo_solo:
                             state['inside']       = True
                             state['entered_at']   = datetime.now()
                             state['entered_at_timestamp'] = time.time()
@@ -1705,6 +1759,7 @@ def unified_state_machine():
                             name   = state['name']
                             reason = ("cam1 solo" if cam1_solo else
                                       "cam2 solo" if cam2_solo else
+                                      "yolo solo" if yolo_solo else
                                       "cam1+cam2 cross")
                             print(f"🚪 ENTER trigger: {name} ({reason})")
                             record_entry(name)
@@ -2320,10 +2375,7 @@ def capture_guide():
         cx, cy = guide.get("center", (0, 0))
         cv2.circle(img, (cx, cy), 5, color, -1)
 
-    text = guide["guidance"]
-    cv2.rectangle(img, (0, img.shape[0] - 40), (img.shape[1], img.shape[0]), (0, 0, 0), -1)
-    cv2.putText(img, text, (20, img.shape[0] - 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    # guidance text is shown in the frontend status div — no overlay needed
 
     ret, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
     if not ret:

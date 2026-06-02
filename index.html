@@ -968,7 +968,7 @@
                 if (elapsed >= t2 && sustainedAlert[key].alerted1 && !sustainedAlert[key].alerted2) {
                     sustainedAlert[key].alerted2 = true;
                     sendSustainedTelegramAlert(tankId, sensorType, v, 2);
-                    addAlertLog(`魚缸 ${tankId} - ${alertName} (ยังไม่ปกติ > ${cfg.alert2Min} นาที)`, value);
+                    addAlertLog(`魚缸 ${tankId} - ${alertName} (持續異常 > ${cfg.alert2Min} 分鐘)`, value);
                 }
                 // 1st alert: >= alert1Min
                 else if (elapsed >= t1 && !sustainedAlert[key].alerted1) {
@@ -1247,7 +1247,7 @@
             const names = { ph: 'pH', temp: '溫度', do: 'DO' };
             const label = names[sensorType] || sensorType;
             const icon = level === 1 ? '🟡' : '🔴';
-            const note = level === 1 ? 'ค่าเกินเกณฑ์ > 30 นาที' : 'ค่าเกินเกณฑ์ > 2 ชั่วโมง';
+            const note = level === 1 ? '數值超標 > 30 分鐘' : '數值超標 > 2 小時';
             try {
                 const msg = `${icon} 魚缸 ${tankId} - ${label} = ${value}\n📌 ${note}\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
                 await fetch('/api/send-sensor-message', {
@@ -1446,7 +1446,7 @@
 
         setTimeout(() => {
             fetchOccupants();
-            setInterval(fetchOccupants, 8000);
+            setInterval(fetchOccupants, 3000);
             setInterval(renderOccupants, 1000);  // live elapsed timer
         }, 1200);
     </script>

@@ -12,20 +12,20 @@ face_lock = threading.Lock()
 FACES_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "faces_db")
 
 # ── Recognition thresholds ────────────────────────────────────────────────────
-SIMILARITY_THRESHOLD  = 0.55   # cosine distance: lower = stricter (same person)
+SIMILARITY_THRESHOLD  = 0.40   # cosine distance: lower = stricter (same person)
 MIN_FACE_QUALITY      = 0.50   # InsightFace det_score: reject blurry/partial faces
 MIN_FACE_SIZE_PX      = 30     # hard cutoff: face smaller than this → reject immediately
 SOFT_SIZE_THRESHOLD   = 50     # face between 30-50 px → apply size penalty to threshold
-HIGH_CONF_THRESHOLD   = 0.35   # distance below this → skip margin check (confident match)
-MIN_INTERCLASS_MARGIN = 0.08   # 2nd-best must be this much worse → reject ambiguous
+HIGH_CONF_THRESHOLD   = 0.25   # distance below this → skip margin check (confident match)
+MIN_INTERCLASS_MARGIN = 0.12   # 2nd-best must be this much worse → reject ambiguous
 
 # Per-camera recognition profiles — tune thresholds per camera position
 # cam_id: 0=YOLO cam, 1=cam1, 2=cam2 (primary), 3=cam3 (no face rec normally)
 CAM_PROFILE = {
-    0: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40},   # 攝影機1 — กลางห้อง, faces start small
-    1: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40},   # 攝影機2 — จ่อหน้าประตู, entrance face cam
-    2: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.42},   # 攝影機3 — ด้านข้างพื้นที่หน้าประตู, side view
-    3: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.38},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
+    0: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40, "size_penalty_coeff": 0.08},   # 攝影機1 — กลางห้อง, faces start small
+    1: {"min_size": 18, "sim_thresh": 0.55, "quality": 0.35, "size_penalty_coeff": 0.04},   # 攝影機2 — จ่อหน้าประตู, entrance face cam
+    2: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.42, "size_penalty_coeff": 0.08},   # 攝影機3 — ด้านข้างพื้นที่หน้าประตู, side view
+    3: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.45, "size_penalty_coeff": 0.08},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
 }
 
 _app = None
@@ -46,8 +46,14 @@ def _time_to_str(val):
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
 
 
-def _unknown():
-    return {"name": None, "status": "unknown", "confidence": 0.0}
+def _unknown(candidate=None, candidate_conf=0.0, ambiguous_with=None):
+    out = {"name": None, "status": "unknown", "confidence": 0.0}
+    if candidate:
+        out["candidate"] = candidate
+        out["candidate_confidence"] = candidate_conf
+    if ambiguous_with:
+        out["ambiguous_with"] = ambiguous_with
+    return out
 
 
 def _normalize_lighting(img):
@@ -162,6 +168,7 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
         min_quality   = profile.get("quality",   MIN_FACE_QUALITY)
         min_size      = profile.get("min_size",  MIN_FACE_SIZE_PX)
         sim_thresh    = profile.get("sim_thresh", SIMILARITY_THRESHOLD)
+        size_penalty_coeff = profile.get("size_penalty_coeff", 0.08)
 
         # Layer 1: lighting normalisation before detection
         preprocessed = _normalize_lighting(img_array)
@@ -190,8 +197,8 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
         size_penalty = 0.0
         if fw < SOFT_SIZE_THRESHOLD or fh < SOFT_SIZE_THRESHOLD:
             ratio = min(fw, fh) / SOFT_SIZE_THRESHOLD
-            size_penalty = (1.0 - ratio) * 0.08
-            dprint(f"📐 FACE{tag}: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px)")
+            size_penalty = (1.0 - ratio) * size_penalty_coeff
+            dprint(f"📐 FACE{tag}: small face penalty={size_penalty:.3f} ({fw:.0f}×{fh:.0f}px, coeff={size_penalty_coeff})")
         effective_threshold = sim_thresh + size_penalty
 
         emb = face.embedding.copy().astype(np.float32)
@@ -222,7 +229,7 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
         dprint(f"🔬 FACE{tag}: best={best_dist:.3f}({best_folder}) 2nd={second_dist:.3f}({second_folder}) | db={db_size} embs | thresh={effective_threshold:.3f} | took={duration:.3f}s")
 
         if best_dist > effective_threshold or best_folder is None:
-            return _unknown()
+            return _unknown(candidate=best_folder, candidate_conf=round(1.0 - best_dist, 2))
 
         # Layer 4: inter-class margin
         # Skip if: very confident, OR both closest are embeddings of the same person
@@ -233,7 +240,8 @@ def recognize_face(img_array, access_rules=None, cam_id=None):
                 margin = second_dist - best_dist
                 if margin < MIN_INTERCLASS_MARGIN:
                     print(f"⚠️ FACE{tag}: ambiguous (margin={margin:.3f} < {MIN_INTERCLASS_MARGIN})")
-                    return _unknown()
+                    return _unknown(candidate=best_folder, candidate_conf=round(1.0 - best_dist, 2),
+                                    ambiguous_with=second_folder)
 
         confidence = round(1.0 - best_dist, 2)
 
@@ -374,6 +382,15 @@ def analyze_face_for_guide(img_array):
             guidance = "位置合適 ✓"
             ready = True
 
+        pose = {}
+        if hasattr(face, 'pose') and face.pose is not None:
+            try:
+                pa = np.array(face.pose).flatten()
+                if len(pa) >= 2:
+                    pose = {'pitch': round(float(pa[0]), 1), 'yaw': round(float(pa[1]), 1)}
+            except Exception:
+                pass
+
         return {
             "detected": True,
             "guidance": guidance,
@@ -382,6 +399,7 @@ def analyze_face_for_guide(img_array):
             "center": (cx, cy),
             "size": (fw, fh),
             "quality": float(quality),
+            "pose": pose,
         }
     except Exception as e:
         return {"detected": False, "guidance": f"分析錯誤: {e}", "ready": False, "bbox": None}

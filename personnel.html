@@ -158,9 +158,22 @@
     <div id="capture-preview-modal" class="fixed inset-0 modal-overlay hidden z-[60] flex items-center justify-center p-2 sm:p-4">
         <div class="glass-card w-full max-w-md p-4 sm:p-5 fade-in modal-content rounded-xl sm:rounded-[1.5rem]">
             <div class="flex items-center justify-between mb-3">
-                <h3 class="text-base sm:text-lg font-bold text-slate-800">拍照預覽 — <span id="preview-cam-label">攝影機 1</span></h3>
+                <h3 class="text-base sm:text-lg font-bold text-slate-800">拍照引導 — <span id="preview-cam-label">攝影機 1</span></h3>
                 <button onclick="closeCapturePreview()"
                         class="text-slate-400 hover:text-slate-600 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-xl hover:bg-slate-100 transition-colors">&times;</button>
+            </div>
+
+            <!-- Pose progress bar -->
+            <div class="flex gap-1.5 mb-3" id="pose-progress-bar"></div>
+
+            <!-- Pose instruction -->
+            <div class="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 mb-3">
+                <span id="pose-step-icon" class="text-2xl flex-shrink-0">😐</span>
+                <div class="min-w-0">
+                    <div class="text-[10px] text-slate-400 font-medium">步驟 <span id="pose-step-num">1</span> / 5</div>
+                    <div class="text-sm font-bold text-slate-800" id="pose-step-label">正面</div>
+                    <div class="text-xs text-slate-500 truncate" id="pose-step-hint">直視鏡頭，頭部保持正面</div>
+                </div>
             </div>
 
             <div class="relative rounded-xl overflow-hidden bg-slate-900 aspect-video flex items-center justify-center mb-3">
@@ -171,7 +184,7 @@
             </div>
 
             <div id="preview-status" class="text-center text-sm font-semibold mb-3">
-                <span class="text-slate-400">กำลัง分析...</span>
+                <span class="text-slate-400">分析中...</span>
             </div>
 
             <div class="flex gap-2 sm:gap-3">
@@ -666,12 +679,75 @@
         }
         function hideErr() { document.getElementById('form-err').classList.add('hidden'); }
 
-        // ── Capture preview with face guidance ──
-        let previewCam = null;
+        // ── Pose-guided capture ──────────────────────────────
+        const POSE_STEPS = [
+            { key: 'front', icon: '😐', label: '正面',   hint: '直視鏡頭，頭部保持正面' },
+            { key: 'left',  icon: '◀',  label: '向左轉', hint: '頭部向左轉約 15°' },
+            { key: 'right', icon: '▶',  label: '向右轉', hint: '頭部向右轉約 15°' },
+            { key: 'down',  icon: '🔽', label: '低頭',   hint: '稍微向下看' },
+            { key: 'up',    icon: '🔼', label: '抬頭',   hint: '稍微向上看' },
+        ];
+        let poseStep    = 0;
+        let previewCam  = null;
         let previewTimer = null;
+
+        function isPoseOk(pose, key) {
+            if (!pose || (!pose.yaw && !pose.pitch)) return true;
+            const { yaw = 0, pitch = 0 } = pose;
+            switch (key) {
+                case 'front': return Math.abs(yaw) < 15 && Math.abs(pitch) < 12;
+                case 'left':  return yaw < -12 && yaw > -45;
+                case 'right': return yaw >  12 && yaw <  45;
+                case 'down':  return pitch >  10 && Math.abs(yaw) < 25;
+                case 'up':    return pitch < -10 && Math.abs(yaw) < 25;
+            }
+            return true;
+        }
+
+        function getPoseMsg(pose, key) {
+            if (!pose || (!pose.yaw && !pose.pitch)) return null;
+            const { yaw = 0, pitch = 0 } = pose;
+            switch (key) {
+                case 'front':
+                    if (Math.abs(yaw) >= 15) return yaw < 0 ? '請向右轉回正面' : '請向左轉回正面';
+                    if (Math.abs(pitch) >= 12) return pitch > 0 ? '請抬頭回正面' : '請低頭回正面';
+                    return null;
+                case 'left':
+                    if (yaw >= -12) return '請向左轉頭';
+                    if (yaw <= -45) return '轉太多，請稍微轉回';
+                    return null;
+                case 'right':
+                    if (yaw <= 12) return '請向右轉頭';
+                    if (yaw >= 45) return '轉太多，請稍微轉回';
+                    return null;
+                case 'down':
+                    if (pitch <= 10) return '請稍微低頭';
+                    if (Math.abs(yaw) > 25) return '請轉回正面並低頭';
+                    return null;
+                case 'up':
+                    if (pitch >= -10) return '請稍微抬頭';
+                    if (Math.abs(yaw) > 25) return '請轉回正面並抬頭';
+                    return null;
+            }
+            return null;
+        }
+
+        function updatePoseUI() {
+            const s = POSE_STEPS[poseStep];
+            document.getElementById('pose-step-icon').textContent  = s.icon;
+            document.getElementById('pose-step-num').textContent   = poseStep + 1;
+            document.getElementById('pose-step-label').textContent = s.label;
+            document.getElementById('pose-step-hint').textContent  = s.hint;
+            document.getElementById('pose-progress-bar').innerHTML = POSE_STEPS.map((p, i) =>
+                `<div class="flex-1 h-2 rounded-full transition-colors ${
+                    i < poseStep ? 'bg-green-400' : i === poseStep ? 'bg-cyan-500' : 'bg-slate-200'
+                }"></div>`
+            ).join('');
+        }
 
         function openCapturePreview(cam) {
             previewCam = cam;
+            poseStep   = 0;
             const labels = {yolo: '攝影機 1', cam1: '攝影機 2', cam2: '攝影機 3', cam3: '攝影機 4'};
             document.getElementById('preview-cam-label').textContent = labels[cam] || cam;
             document.getElementById('preview-guide-img').src = '';
@@ -681,6 +757,7 @@
                 'flex-1 bg-cyan-600/40 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm';
             document.getElementById('preview-status').innerHTML =
                 '<span class="text-slate-400">分析中...</span>';
+            updatePoseUI();
             document.getElementById('capture-preview-modal').classList.remove('hidden');
             document.body.style.overflow = 'hidden';
             refreshPreview();
@@ -696,12 +773,12 @@
 
         async function refreshPreview() {
             if (!previewCam) return;
-            const ts = Date.now();
+            const ts  = Date.now();
             const cam = previewCam;
             const img = document.getElementById('preview-guide-img');
             const loading = document.getElementById('preview-loading');
-            const status = document.getElementById('preview-status');
-            const btn = document.getElementById('preview-capture-btn');
+            const status  = document.getElementById('preview-status');
+            const btn     = document.getElementById('preview-capture-btn');
 
             img.onload = () => loading.classList.add('hidden');
             img.onerror = () => loading.classList.add('hidden');
@@ -710,9 +787,20 @@
             try {
                 const res = await fetch(`/api/face/capture-guide?cam=${cam}&t=${ts}&fmt=json`);
                 if (!res.ok) return;
-                const data = await res.json();
-                const ready = data.ready;
-                status.innerHTML = `<span class="${ready ? 'text-green-600' : 'text-amber-600'}">${data.guidance}</span>`;
+                const data    = await res.json();
+                const key     = POSE_STEPS[poseStep].key;
+                const posOk   = data.ready;
+                const poseOk  = isPoseOk(data.pose, key);
+                const poseMsg = getPoseMsg(data.pose, key);
+                const ready   = posOk && poseOk;
+
+                let msg = '';
+                if (!data.detected)   msg = data.guidance;
+                else if (!posOk)      msg = data.guidance;
+                else if (poseMsg)     msg = poseMsg;
+                else                  msg = `${POSE_STEPS[poseStep].label} ✓ 準備就緒，請拍照`;
+
+                status.innerHTML = `<span class="${ready ? 'text-green-600 font-semibold' : 'text-amber-600'}">${msg}</span>`;
                 btn.disabled = !ready;
                 btn.className = ready
                     ? 'flex-1 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm shadow-sm cursor-pointer'
@@ -722,25 +810,38 @@
 
         async function confirmCapture() {
             if (!previewCam) return;
-            closeCapturePreview();
-            const btn = document.querySelector(`.capture-btn[data-cam="${previewCam}"]`);
-            if (btn) {
-                const orig = btn.innerHTML;
-                btn.disabled = true;
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                try {
-                    const res = await fetch(`/api/face/capture-entry?cam=${previewCam}`);
-                    if (!res.ok) { showErr(`無法從 ${previewCam} 取得影像`); return; }
-                    const blob = await res.blob();
-                    const file = new File([blob], `${previewCam}_${Date.now()}.jpg`, { type: 'image/jpeg' });
-                    selectedFiles.push(file);
-                    renderNewPreviews();
-                } catch {
-                    showErr('網路錯誤');
-                } finally {
-                    btn.disabled = false;
-                    btn.innerHTML = orig;
-                }
+            const cam  = previewCam;
+            const step = poseStep;
+            const captureBtn = document.getElementById('preview-capture-btn');
+            captureBtn.disabled = true;
+            captureBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 拍攝中...';
+
+            try {
+                const res = await fetch(`/api/face/capture-entry?cam=${cam}`);
+                if (!res.ok) { showErr(`無法從 ${cam} 取得影像`); return; }
+                const blob = await res.blob();
+                const file = new File([blob], `${cam}_pose${step + 1}_${Date.now()}.jpg`, { type: 'image/jpeg' });
+                selectedFiles.push(file);
+                renderNewPreviews();
+            } catch {
+                showErr('網路錯誤');
+                captureBtn.disabled = false;
+                captureBtn.innerHTML = '拍照';
+                return;
+            }
+
+            if (poseStep < POSE_STEPS.length - 1) {
+                // advance to next pose
+                poseStep++;
+                updatePoseUI();
+                captureBtn.disabled = true;
+                captureBtn.className = 'flex-1 bg-cyan-600/40 text-white font-semibold py-2.5 rounded-xl transition-colors text-xs sm:text-sm';
+                captureBtn.innerHTML = '拍照';
+                document.getElementById('preview-status').innerHTML =
+                    `<span class="text-slate-400">請調整為「${POSE_STEPS[poseStep].label}」姿勢</span>`;
+            } else {
+                // all 5 poses done
+                closeCapturePreview();
             }
         }
 

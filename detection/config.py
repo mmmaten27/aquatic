@@ -1,5 +1,9 @@
-TELEGRAM_TOKEN = "8799226916:AAE4wB4MjldfJopc3kUW0NeNIHP5Eyy7Jx8"
-CHAT_ID = "8290851716"
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID        = os.getenv("CHAT_ID", "")
 
 # ── Cooldown ──
 COOLDOWN_SECONDS = 10
