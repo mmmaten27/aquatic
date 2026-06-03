@@ -17,15 +17,15 @@ MIN_FACE_QUALITY      = 0.50   # InsightFace det_score: reject blurry/partial fa
 MIN_FACE_SIZE_PX      = 30     # hard cutoff: face smaller than this → reject immediately
 SOFT_SIZE_THRESHOLD   = 50     # face between 30-50 px → apply size penalty to threshold
 HIGH_CONF_THRESHOLD   = 0.25   # distance below this → skip margin check (confident match)
-MIN_INTERCLASS_MARGIN = 0.12   # 2nd-best must be this much worse → reject ambiguous
+MIN_INTERCLASS_MARGIN = 0.15   # 2nd-best must be this much worse → reject ambiguous (stricter)
 
 # Per-camera recognition profiles — tune thresholds per camera position
 # cam_id: 0=YOLO cam, 1=cam1, 2=cam2 (primary), 3=cam3 (no face rec normally)
 CAM_PROFILE = {
-    0: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.40, "size_penalty_coeff": 0.08},   # 攝影機1 — กลางห้อง, faces start small
-    1: {"min_size": 18, "sim_thresh": 0.55, "quality": 0.35, "size_penalty_coeff": 0.04},   # 攝影機2 — จ่อหน้าประตู, entrance face cam
-    2: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.42, "size_penalty_coeff": 0.08},   # 攝影機3 — ด้านข้างพื้นที่หน้าประตู, side view
-    3: {"min_size": 22, "sim_thresh": 0.55, "quality": 0.45, "size_penalty_coeff": 0.08},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
+    0: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.40, "size_penalty_coeff": 0.08},   # 攝影機1 — กลางห้อง, faces start small
+    1: {"min_size": 18, "sim_thresh": 0.45, "quality": 0.35, "size_penalty_coeff": 0.04},   # 攝影機2 — ประตูเข้า, stricter for UNKNOWN detection
+    2: {"min_size": 22, "sim_thresh": 0.48, "quality": 0.42, "size_penalty_coeff": 0.08},   # 攝影機3 — มุมห้อง
+    3: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.45, "size_penalty_coeff": 0.08},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
 }
 
 _app = None

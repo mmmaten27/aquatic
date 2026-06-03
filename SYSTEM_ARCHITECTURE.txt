@@ -1,0 +1,634 @@
+================================================================================
+                    SYSTEM ARCHITECTURE — FACE RECOGNITION ACCESS CONTROL
+                          Aquaponics Lab (IoT Lab) Monitoring System
+================================================================================
+
+สารบัญ
+  1. ภาพรวมระบบ (System Overview)
+  2. โครงสร้างไฟล์ (File Structure)
+  3. ระบบหลังบ้าน — Flask Backend (app.py)
+       3.1  การเริ่มต้นระบบ (Initialization)
+       3.2  กล้อง (Camera System)
+       3.3  YOLO Person Detection
+       3.4  Face Recognition Pipeline
+       3.5  State Machine (Unified Access Control)
+       3.6  Database (MySQL)
+       3.7  Telegram Notifications
+       3.8  API Routes
+  4. ระบบตรวจจับ (Detection Module)
+       4.1  detection/config.py
+       4.2  detection/face_utils.py
+       4.3  detection/camera_utils.py
+       4.4  detection/log_utils.py
+       4.5  detection/mode1.py
+  5. ระบบ frontend (HTML + JavaScript)
+       5.1  login.html
+       5.2  index.html (Dashboard)
+       5.3  personnel.html
+       5.4  history.html
+       5.5  register.html
+       5.6  tank.html
+  6. Data Flow Diagram (เส้นทางข้อมูล)
+  7. Key Parameters ตารางค่าสำคัญ
+  8. จุดที่ปรับแก้แล้ว (Recent Fixes)
+
+
+================================================================================
+1. ภาพรวมระบบ (System Overview)
+================================================================================
+
+ระบบนี้เป็น Access Control System สำหรับห้องปฏิบัติการ (IoT Lab Aquaponics)
+โดยใช้กล้อง 4 ตัวในการตรวจจับใบหน้า + YOLO สำหรับตรวจจับบุคคล เพื่อควบคุม
+การเข้า-ออกห้อง โดยมีบัญชีพนักงานที่授权ไว้และระบบแจ้งเตือนผ่าน Telegram.
+
+กล้อง 4 ตัว:
+  - YOLO CAM (index 0): กล้องมุมกว้างกลางห้อง, ตรวจจับบุคคล/นับจำนวน
+  - CAM1 (index 1): กล้องหน้าประตูทางเข้า (Entrance Door)
+  - CAM2 (index 2): กล้องด้านข้างในห้อง มองเห็นใบหน้าชัด (Primary Face Cam)
+  - CAM3 (index 3): กล้องทางออก (Exit Door)
+
+เทคโนโลยีที่ใช้:
+  - Backend: Python Flask (REST API)
+  - Face Recognition: InsightFace (ArcFace buffalo_l)
+  - Person Detection: YOLOv8 (Ultralytics)
+  - Database: MySQL (pymysql)
+  - Notification: Telegram Bot
+  - Frontend: HTML + JavaScript (vanilla, fetch API)
+  - Computer Vision: OpenCV
+
+
+================================================================================
+2. โครงสร้างไฟล์ (File Structure)
+================================================================================
+
+PROJECT-2026-main/
+│
+├── app.py                          # Flask backend หลัก (API + logic ทั้งหมด)
+├── detection/                      # โมดูลตรวจจับ (Python package)
+│   ├── __init__.py                 # export MIN_CONFIDENCE จาก config
+│   ├── config.py                   # ค่า config กลาง (Telegram token, thresholds)
+│   ├── camera_utils.py             # จัดการกล้อง USB (calibration indices)
+│   ├── face_utils.py               # Face recognition (ArcFace embeddings)
+│   ├── log_utils.py                # ฟังก์ชัน log (dprint, iprint)
+│   ├── mode1.py                    # standalone mode (รันเฉพาะ YOLO detection)
+│   ├── requirements.txt            # Python dependencies
+│   └── captures/                   # รูปภาพ capture (auto-generated)
+│       ├── cam2_*.jpg              # CAM2 snapshots
+│       ├── detection_*.jpg         # YOLO detection captures
+│       └── unknown_cam1_*.jpg      # Unknown person captures
+│
+├── faces_db/                       # ฐานข้อมูลภาพใบหน้า (face images)
+│   ├── Std001/                     # พนักงานรหัส Std001
+│   │   ├── photo1.jpg
+│   │   ├── photo2.jpg
+│   │   └── photo3.jpg
+│   └── std002/                     # พนักงานรหัส std002
+│       ├── photo1.jpg ~ photo9.jpg
+│
+├── index.html                      # หน้า Dashboard หลัก
+├── login.html                      # หน้า Login
+├── register.html                   # หน้า Register
+├── personnel.html                  # หน้าจัดการพนักงาน
+├── history.html                    # หน้าประวัติเข้า-ออก
+├── tank.html                       # หน้าจอ tank sensor
+├── favicon.ico                     # icon
+├── database_setup.sql              # SQL สำหรับสร้าง Database
+│
+├── *.txt / *.md                    # เอกสารวิเคราะห์
+├── detection_log.txt               # Log file (runtime)
+├── yolov8n.pt                      # YOLO model weights (ignored by git)
+└── .gitignore                      # Git ignore rules
+
+
+================================================================================
+3. ระบบหลังบ้าน — Flask Backend (app.py)
+================================================================================
+
+3.1 การเริ่มต้นระบบ (Initialization)
+--------------------------------------------------
+ฟังก์ชัน init_system() ที่ app.py:2437 ถูกเรียกก่อนเริ่ม Flask:
+
+  ขั้นตอน:
+  1. โหลด YOLO model (yolov8n.pt) 2 instance แยก:
+       - model       → ใช้กับ YOLO CAM (track mode)
+       - surv_model  → ใช้กับกล้อง Surveillance 1,2,3 (detect mode)
+  2. สร้างตาราง Database (ถ้ายังไม่มี):
+       - detection_logs, users, authorized_personnel, room_events, room_occupants_log
+  3. _ensure_access_rules() → โหลดข้อมูลพนักงานจาก DB เข้า cache
+  4. _restore_person_state() → กู้คืนสถานะคนในห้องจาก DB (กรณี reboot)
+  5. init_yolo_camera() → เปิดกล้อง YOLO
+  6. init_surveillance_cameras() → เปิดกล้อง 1,2,3
+  7. สร้าง Face DB cache (embedding) → _build_db()
+  8. Start Background Threads:
+       - yolo_capture_loop()       : จับภาพ YOLO + detect
+       - surv_capture_loop(cam_id) : จับภาพ Surveillance (1 ตัวต่อกล้อง)
+       - face_recognition_loop()   : Face rec สำหรับ YOLO CAM tracks
+       - surv_detect_loop(cam_id)  : Face rec สำหรับ Surveillance (1 ตัวต่อกล้อง)
+       - unified_state_machine()   : ตัวตัดสิน ENTER/EXIT
+       - cleanup_old_captures()    : ลบ captures เก่าทุก 1 ชม.
+
+Thread Model (9 threads พร้อมกัน):
+  ┌─────────────────────────────────────────────────────┐
+  │ Main Thread (Flask WSGI)                           │
+  │   ├── t_yolo    : yolo_capture_loop()              │
+  │   ├── t_surv1   : surv_capture_loop(cam_id=1)      │
+  │   ├── t_surv2   : surv_capture_loop(cam_id=2)      │
+  │   ├── t_surv3   : surv_capture_loop(cam_id=3)      │
+  │   ├── t_face    : face_recognition_loop()           │
+  │   ├── t_detect1 : surv_detect_loop(cam_id=1)       │
+  │   ├── t_detect2 : surv_detect_loop(cam_id=2)       │
+  │   ├── t_detect3 : surv_detect_loop(cam_id=3)       │
+  │   ├── t_state   : unified_state_machine()           │
+  │   └── t_cleanup : cleanup_old_captures()            │
+  └─────────────────────────────────────────────────────┘
+
+3.2 กล้อง (Camera System)
+--------------------------------------------------
+Camera Index Mapping:
+  - YOLO CAM  → dynamic index (default 0)
+  - CAM1      → dynamic index (default 1)
+  - CAM2      → dynamic index (default 2)
+  - CAM3      → dynamic index (default 3)
+
+ฟังก์ชัน refresh_camera_indices() เรียกใช้ get_calibrated_indices()
+เพื่อ map logical ID → physical index (รองรับ USB re-enumeration).
+
+Capture Loop (surv_capture_loop):
+  - อ่านเฟรมจากกล้องที่ 5 fps
+  - แปลงเป็น JPEG (quality 50) และเก็บใน surv_frames[cam_id]
+  - เก็บ raw frame ใน latest_raw_frames[cam_id] สำหรับ event capture
+  - Retry mechanism: 8 fails → reconnect camera
+
+YOLO Capture Loop (yolo_capture_loop):
+  - อ่านเฟรมที่ 10 fps
+  - ใช้ Motion Detection เพื่อลด YOLO calls:
+        ถ้า pixel change < 1500 → ข้าม YOLO
+        บังคับ run ทุก 30 วินาที (MOTION_FORCED_INTERVAL)
+  - เรียก model.track() ทุก 3 เฟรม (classes=[0] = person only)
+  - ส่ง face recognition request ทุก 15 เฟรม (detect_every * 5)
+
+3.3 YOLO Person Detection
+--------------------------------------------------
+YOLO CAM ใช้ model.track() พร้อม persist=True เพื่อ track id
+ข้ามเฟรม (BoT-SORT tracker ของ Ultralytics).
+
+  Flow:
+  1. อ่านเฟรม → motion gate check
+  2. ถ้ามี motion → model.track(img, classes=[0], persist=True)
+  3. กรอง detection ด้วย MIN_CONFIDENCE (0.70)
+  4. ส่ง crops ไปยัง face_recognition_loop
+  5. วาด bounding boxes + labels
+  6. บันทึก detection_logs ใน DB
+  7. อัปเดต current_person_count, daily_detection_total
+
+Face Recognition Loop (face_recognition_loop):
+  - รอ face_pending_event (Event flag)
+  - เมื่อมี crop จาก YOLO → crop head region → recognize_face()
+  - จัดการ per-track buffer: เก็บ crop ไว้ TRACK_BUFFER_SIZE=3
+  - Retry ด้วย buffered crops ถ้าเฟรมแรกไม่ชัด
+  - ถ้าเจอ → update_sighting() และ update_occupancy_last_seen()
+  - ถ้าไม่เจอ → track_first_seen รอ UNKNOWN_DEFER_SEC=15s → alert
+
+3.4 Face Recognition Pipeline
+--------------------------------------------------
+Face recognition ใช้ InsightFace ArcFace (buffalo_l model)
+generate embedding 128-dim → cosine distance กับ embeddings ใน DB.
+
+  Pipeline (ใน recognize_face() ที่ face_utils.py):
+
+    1. Lighting Normalization (CLAHE)
+    2. Face Detection (InsightFace detector)
+    3. Quality Gate (det_score >= profile.quality)
+       CAM_PROFILE:
+         cam0: quality=0.40, sim_thresh=0.55
+         cam1: quality=0.40, sim_thresh=0.55  ← entrance
+         cam2: quality=0.42, sim_thresh=0.50  ← primary face
+         cam3: quality=0.38, sim_thresh=0.55  ← exit
+    4. Size Gate (face width/height >= min_size)
+       ถ้า < SOFT_SIZE_THRESHOLD(50px) → size_penalty
+       size_penalty = (1 - ratio) * size_penalty_coeff
+         cam1: coeff=0.04 (เบากว่า ปรับมาแล้ว)
+         อื่น: coeff=0.08
+    5. Embedding Extraction → cosine distance
+         best_dist = 1 - dot(emb, db_emb)
+    6. Threshold Check:
+         best_dist < sim_thresh + size_penalty → match
+    7. Inter-Class Margin Check:
+         margin = second_dist - best_dist
+         ถ้า margin < MIN_INTERCLASS_MARGIN(0.08) → AMBIGUOUS → reject
+         ข้อยกเว้น: best_dist < HIGH_CONF_THRESHOLD(0.35) หรือ
+                    best_folder == second_folder → skip margin check
+
+  Return value format:
+    สำเร็จ: {"name": "Tongen", "status": "authorized", "confidence": 0.51}
+    ไม่สำเร็จ: {"name": None, "status": "unknown", "confidence": 0.0,
+                "candidate": "Std001", "candidate_confidence": 0.49,
+                "ambiguous_with": "std002"}  ← แก้ไขแล้วให้มี candidate
+
+3.5 State Machine (Unified Access Control)
+--------------------------------------------------
+ทำงานใน unified_state_machine() thread ทุก 1 วินาที.
+
+  ตัวแปรสถานะ:
+    person_state = {
+      face_folder: {
+        "name": "Tongen",
+        "inside": True/False,
+        "entered_at": datetime,
+        "entered_at_timestamp": timestamp,
+        "last_seen": {1: ts, 2: ts, 3: ts, 'yolo': ts},
+        "last_confidence": {1: conf, 2: conf, 3: conf, 'yolo': conf},
+        "exit_pending": True/False,
+        "exit_started_at": timestamp,
+      }
+    }
+
+  ENTER Logic (inside=False → inside=True):
+    เงื่อนไข (ต้องการอย่างน้อย 1 ข้อ):
+      • cam1_solo  = cam1 มองเห็น + confidence >= 0.40
+      • cam2_solo  = cam2 มองเห็น + confidence >= CAM2_SOLO_CONFIDENCE (0.50)
+      • cross_conf = cam1 AND cam2 มองเห็นพร้อมกัน
+
+    Time windows:
+      cam1 ต้องเห็นภายใน ENTRY_WINDOW_SEC (12s)
+      cam2 ต้องเห็นภายใน ENTRY_WINDOW_SEC (12s)
+
+    เมื่อ ENTER:
+      1. state.inside = True
+      2. record_entry(name) → เพิ่มใน room_occupants
+      3. _save_event_capture("ENTER")
+      4. _do_notify_enter(name) → Telegram (ถ้าอยู่นอกเวลางาน)
+
+  EXIT Logic (inside=True → inside=False):
+    2-Stage Process:
+      Stage 1: cam3 เห็นคน → state.exit_pending = True
+      Stage 2: รอ EXIT_CONFIRM_DELAY_SEC (8s)
+        - ถ้าไม่มีกล้องไหนเห็นคนอีก → CONFIRM EXIT
+        - ถ้ายังมีกล้องเห็น → CANCEL EXIT
+        - ถ้าเกิน EXIT_MAX_WAIT_SEC (30s) → FORCE EXIT
+      Grace Period: ถ้า enter < 30s → ignore exit trigger
+
+  Multi-Frame Voting (CAM1) (เพิ่มใหม่):
+    ถ้า CAM1 reject ใบหน้าด้วย ambiguous margin แต่เจอ candidate เดิมซ้ำ
+      3 เฟรมติดต่อกัน → force accept (bypass ambiguous check)
+
+  Stale Occupant Cleanup:
+    - ถ้าคนในห้องไม่ถูก detect ด้วยกล้องตัวไหนเลย
+      นานเกิน STALE_OCCUPANT_SEC (300s) → ถือว่าออกไปแล้ว
+
+3.6 Database (MySQL)
+--------------------------------------------------
+Connection Config:
+  host: 127.0.0.1, user: root, password: (empty)
+  database: alltankdata
+
+Tables:
+  1. sensordata
+       - timestamp, temperature, ph, oxygen, ...
+       - ข้อมูล sensor ถังปลา
+
+  2. detection_logs
+       - id, timestamp, person_count, image_filename
+       - person_name, access_status (authorized/unauthorized/unknown)
+
+  3. room_events
+       - id, event_type (ENTER/EXIT), person_name, face_folder
+       - cam_id, timestamp
+
+  4. room_occupants_log
+       - face_folder (PK), person_name, entered_at
+       - ใช้กู้คืนสถานะ (restore) ตอน restart
+
+  5. authorized_personnel
+       - id, name, employee_id, role, face_folder
+       - access_start, access_end (เวลาเข้าใช้)
+       - is_active (เปิด/ปิดการใช้งาน)
+
+  6. users
+       - id, username, password_hash, created_at
+
+  7. tank1, tank2, tank3
+       - sensor data per tank
+
+3.7 Telegram Notifications
+--------------------------------------------------
+Token/Config ใน detection/config.py
+
+  Events ที่ส่ง:
+    - เปิด/ปิดระบบ
+    - ตรวจจับคนนอกเวลาทำงาน (⚠️)
+    - ENTER นอกเวลาหรือ unauthorized (🚨)
+    - EXIT ปกติ (🚶)
+    - Unknown person ที่入口 (⚠️)
+    - Unknown person ออกแล้ว (✅)
+
+  Rate Limiting:
+    - max 3 threads พร้อมกัน
+    - ENTER notify cooldown 60s/person
+    - Unknown alert cooldown 300s/camera
+
+3.8 API Routes
+--------------------------------------------------
+  Authentication:
+    POST /login, GET /logout
+
+  Dashboard:
+    GET  /                          → serves index.html
+    GET  /api/detection-stats       → person count, daily total
+    GET  /api/room/status           → occupants list
+    GET  /api/occupancy             → event-based occupancy
+    GET  /api/room/events?limit=N   → ENTER/EXIT logs
+    GET  /api/room/history?page=&search=&date_*=&per_page=
+    GET  /api/face/latest           → current face detection + capture URL
+    GET  /api/face-photo/<folder>   → serve face photo
+    GET  /api/unknown-alerts        → unknown person captures
+
+  Video Stream:
+    GET  /video_feed                → YOLO CAM stream (MJPEG)
+    GET  /surv_feed/<cam_id>        → Surveillance cam stream
+
+  Camera:
+    GET  /api/face/capture-entry?cam=yolo|cam1|cam2|cam3
+    GET  /api/face/capture-guide?cam=&fmt=json
+    GET  /api/face/latest/capture
+    GET  /api/face/latest/capture/entry
+    GET  /api/face/latest/capture/exit
+
+  Sensor:
+    GET  /api/sensor-data
+    GET  /api/sensor-data/tank/<id>
+    GET  /api/sensor-history/<hours>
+
+  Personnel Management:
+    GET    /personnel               → serves personnel.html
+    GET    /api/personnel           → list all personnel
+    POST   /api/personnel           → add person
+    POST   /api/personnel/<id>/photo → upload face photo
+    POST   /api/personnel/<id>/face-folder → set face_folder
+    PUT    /api/personnel/<id>      → update person
+    DELETE /api/personnel/<id>      → delete person + photos
+    DELETE /api/personnel/<id>/photo/<filename> → delete one photo
+
+  Telegram:
+    POST /api/send-fault-alert
+    POST /api/send-trend-alert
+    POST /api/send-sensor-message
+
+
+================================================================================
+4. ระบบตรวจจับ (Detection Module)
+================================================================================
+
+4.1 detection/config.py
+--------------------------------------------------
+  Config constants:
+    TELEGRAM_TOKEN          = "..."         # Bot token
+    CHAT_ID                 = "..."         # Chat ID for alerts
+    COOLDOWN_SECONDS        = 10            # Cooldown between alerts
+    MIN_CONFIDENCE          = 0.70          # YOLO confidence threshold
+    ACTIVE_START            = "08:00"       # เวลาทำงานเริ่ม
+    ACTIVE_END              = "17:00"       # เวลาทำงานสิ้นสุด
+    MIN_PERSON_COUNT        = 1             # Min people to trigger alert
+    ENABLE_LOG              = True          # Write log file
+    LOG_FILE                = "detection_log.txt"
+
+4.2 detection/face_utils.py
+--------------------------------------------------
+  ฟังก์ชันหลัก:
+    recognize_face(img_array, access_rules, cam_id)
+      → {"name", "status", "confidence", "candidate", ...}
+    
+    _build_db() → สร้าง embedding cache จาก faces_db/
+    clear_face_cache() → ล้าง cache (เรียกเมื่อเพิ่ม/ลบรูป)
+    
+    save_face_image(face_folder, file_storage) → บันทึกรูป
+    list_face_photos(face_folder) → รายการรูป
+    delete_face_photo() / delete_face_folder()
+    analyze_face_for_guide(img) → วิเคราะห์ตำแหน่งใบหน้า
+
+  Key Parameters:
+    SIMILARITY_THRESHOLD    = 0.55   # Cosine distance threshold
+    MIN_FACE_QUALITY        = 0.50   # det_score minimum
+    MIN_FACE_SIZE_PX        = 30     # Face ขั้นต่ำ (px)
+    SOFT_SIZE_THRESHOLD     = 50     # เริ่ม penalty ถ้าต่ำกว่า
+    HIGH_CONF_THRESHOLD     = 0.35   # ข้าม margin check ถ้า confident
+    MIN_INTERCLASS_MARGIN   = 0.08   # Margin ขั้นต่ำระหว่างคน
+
+4.3 detection/camera_utils.py
+--------------------------------------------------
+  ฟังก์ชัน:
+    get_calibrated_indices()
+      → ส่งคืน mapping ของกล้อง (yolo, cam1, cam2, cam3)
+      ใช้ persistent calibration file (camera_calibration.json)
+      เพื่อจำ index กล้องข้ามการ reboot
+
+    get_cameras_with_device_path()
+      → enumerate กล้องทั้งหมด + device path
+
+4.4 detection/log_utils.py
+--------------------------------------------------
+  dprint(msg) → debug log (แสดงเฉพาะเมื่อ DEBUG=True)
+  iprint(msg) → important log (แสดงตลอด)
+
+4.5 detection/mode1.py
+--------------------------------------------------
+  โหมด standalone สำหรับรันเฉพาะ YOLO detection (ไม่ต้องใช้ Flask)
+  มีระบบ:
+    - Telegram bot commands (/start, /stop, /status, /photo)
+    - Person detection + alert
+    - ทำงานตามเวลาทำงาน (08:00-17:00)
+    - Image capture + send
+
+  เกณฑ์:
+    - ใช้ YOLOv8n.pt
+    - Confidence >= MIN_CONFIDENCE (0.70)
+    - Cooldown = COOLDOWN_SECONDS (10s)
+    - 1 camera (index 0)
+
+
+================================================================================
+5. ระบบ Frontend (HTML + JavaScript)
+================================================================================
+
+5.1 login.html
+--------------------------------------------------
+  หน้า login สำหรับ user
+  ใช้ session (Flask session) + werkzeug password hash
+  ส่ง POST /login → redirect ไป index.html
+
+5.2 index.html (Dashboard หลัก)
+--------------------------------------------------
+  แสดง:
+    - Video Stream จาก YOLO CAM + Surveillance 3 ตัว
+    - 在室人员 (Occupants) → รายชื่อคนในห้อง
+    - Recent Detection → ภาพล่าสุด + ชื่อคน + สถานะ
+    - สถิติ → current count, daily total, last detection
+    - Event Timeline → ENTER/EXIT log
+    - Sensor Data → ค่า sensor ถังปลา
+
+  JavaScript (fetch API ทุก 2-5 วินาที):
+    /api/occupancy           : อัปเดต occupants list
+    /api/face/latest         : อัปเดต face detection
+    /api/detection-stats     : อัปเดตสถิติ
+    /api/room/events?limit=5 : อัปเดต timeline
+
+5.3 personnel.html
+--------------------------------------------------
+  จัดการพนักงาน:
+    - แสดงตารางพนักงานทั้งหมด (GET /api/personnel)
+    - เพิ่มพนักงาน (POST /api/personnel)
+    - แก้ไขพนักงาน (PUT /api/personnel/<id>)
+    - ลบพนักงาน (DELETE /api/personnel/<id>)
+    - อัปโหลดรูปใบหน้า (POST /api/personnel/<id>/photo)
+    - ลบรูป (DELETE /api/personnel/<id>/photo/<filename>)
+    - ดูตัวอย่างรูปผ่าน /api/face-photo/<face_folder>
+
+  ข้อมูลพนักงาน: name, employee_id, role, face_folder,
+                 access_start, access_end, is_active
+
+5.4 history.html
+--------------------------------------------------
+  แสดงประวัติ ENTER/EXIT:
+    - ค้นหาตามชื่อ, วันที่
+    - รูปภาพประกอบ (จาก detection_logs)
+    - ระยะเวลาที่อยู่ในห้อง (duration)
+    - Pagination
+
+5.5 register.html
+--------------------------------------------------
+  หน้า Register สำหรับสร้าง user ใหม่
+
+5.6 tank.html
+--------------------------------------------------
+  หน้าแสดง Sensor Data ของถังปลา (tank1, tank2, tank3)
+  - Temperature, pH, DO, ฯลฯ
+  - graph/history
+
+
+================================================================================
+6. Data Flow Diagram (เส้นทางข้อมูล)
+================================================================================
+
+เส้นทาง ENTER (คนเข้าห้อง):
+
+  CAM1 (Entrance)                     CAM2 (Indoor Face)
+       │                                    │
+       ▼                                    ▼
+  YOLO detect คน                    YOLO detect คน
+       │                                    │
+       ▼                                    ▼
+  Face Recognition                   Face Recognition
+  (อาจ ambiguous)                     (ชัดกว่า)
+       │                                    │
+       ▼                                    ▼
+  surv_detect_loop(1)                surv_detect_loop(2)
+  │                                     │
+  │  ถ้า ambiguous →                    │  identify ได้ →
+  │  vote 3 เฟรม → force accept         │  update_sighting(name, 2, conf)
+  │                                     │
+  ▼                                     ▼
+  update_sighting(name, 1, conf)    update_sighting(name, 2, conf)
+       │                                    │
+       └──────────┬─────────────────────────┘
+                  ▼
+        unified_state_machine()
+                  │
+        เช็ค cam1_solo / cam2_solo / cross
+                  │
+        (ด้วย CAM2_SOLO_CONFIDENCE=0.50)
+                  │
+                  ▼
+           inside = True
+                  │
+                  ▼
+       record_entry(name)
+       _save_event_capture("ENTER")
+       _do_notify_enter(name)
+
+เส้นทาง EXIT (คนออกจากห้อง):
+
+  CAM3 (Exit)
+       │
+       ▼
+  surv_detect_loop(3)
+       │
+       ▼
+  YOLO proxy → infer occupant
+       │
+       ▼
+  update_sighting(name, 3)
+       │
+       ▼
+  unified_state_machine()
+       │
+       ├─ Stage 1: exit_pending = True
+       ├─ Stage 2: รอ 8s
+       │     ├─ ไม่มีกล้องเห็น → EXIT
+       │     ├─ ยังมีกล้องเห็น → CANCEL
+       │     └─ เกิน 30s → FORCE EXIT
+       │
+       ▼
+  record_exit(name)
+  _save_event_capture("EXIT")
+  _do_notify_exit(name)
+
+
+================================================================================
+7. Key Parameters ตารางค่าสำคัญ
+================================================================================
+
+  Parameter                          Value     คำอธิบาย
+  ──────────────────────────────────────────────────────────────────────────
+  CAM2_SOLO_CONFIDENCE               0.50      CAM2 เห็นหน้า → enter ทันที
+  ENTRY_WINDOW_SEC                   12        เวลาหน้าต่างสำหรับ entry
+  EXIT_WINDOW_SEC                    8         เวลาหน้าต่างสำหรับ exit
+  EXIT_CONFIRM_DELAY_SEC             8         รอ 8s ก่อน confirm exit
+  EXIT_MAX_WAIT_SEC                  30        บังคับ exit ถ้าเกิน 30s
+  PRESENCE_WINDOW_SEC                10        กล้องต้องเห็นคนภายใน 10s
+  MIN_CONFIDENCE                     0.70      YOLO confidence ขั้นต่ำ
+  COOLDOWN_SECONDS                   10        cooldown alert
+  UNKNOWN_DEFER_SEC                  15        รอ unknown alert 15s
+  UNKNOWN_COOLDOWN_SEC               300       cooldown unknown alert (5 min)
+  STALE_OCCUPANT_SEC                 300       ลบ occupant เก่า (5 min)
+  TRACK_BUFFER_SIZE                  3         buffer crop สำหรับ retry
+  TRACK_CLEANUP_TIMEOUT              5         ลบ track ที่ไม่เห็น 5s
+  VOTE_REQUIRED                      1         จำนวน vote ขั้นต่ำ
+  VOTE_WINDOW_SEC                    12        vote timeout
+  MOTION_PIXEL_THRESHOLD             1500      motion gate threshold
+  MOTION_FORCED_INTERVAL             30        บังคับ detect ทุก 30s
+  SURV_VOTE_THRESHOLD {1:3}          3         CAM1 force accept หลัง 3 เฟรม
+
+  Face Recognition:
+  SIMILARITY_THRESHOLD               0.55      cosine distance threshold
+  HIGH_CONF_THRESHOLD                0.35      ข้าม margin check
+  MIN_INTERCLASS_MARGIN              0.08      margin ขั้นต่ำ
+  SOFT_SIZE_THRESHOLD                50px      เริ่ม size penalty
+  MIN_FACE_SIZE_PX                   30px      face ขั้นต่ำ
+  MIN_FACE_QUALITY                   0.50      det_score ขั้นต่ำ
+  cam1 size_penalty_coeff            0.04      penalty เบาสำหรับ entrance
+
+
+================================================================================
+8. จุดที่ปรับแก้แล้ว (Recent Fixes)
+================================================================================
+
+  Fix 1 — CAM2_SOLO_CONFIDENCE (app.py:107)
+    ก่อน: 0.80 → หลัง: 0.50
+    เหตุผล: face rec CAM2 ใช้ sim_thresh=0.50 แต่ gate ต้องการ
+            confidence 0.80 → ไม่ match กัน → แก้ให้ตรงกัน
+    Result: CAM2 identify ที่ conf≥0.50 → ENTER ทันที
+
+  Fix 2 — Multi-Frame Voting (app.py:1184-1222)
+    เพิ่ม: เมื่อ CAM1 reject ใบหน้าด้วย ambiguous margin (margin < 0.08)
+          แต่เจอ candidate เดิม 3 เฟรมติด → force accept
+    ตัวแปร: SURV_VOTE_CAMS={1}, SURV_VOTE_THRESHOLD={1:3}
+    Result: CAM1 bypass ambiguous reject สำหรับคนที่ยืนหน้ากล้องนาน
+
+  Fix 3 — Size Penalty Coefficient (face_utils.py:27)
+    CAM1: 0.08 → 0.04 (ลด penalty สำหรับ entrance camera)
+    CAM_PROFILE: เพิ่มฟิลด์ "size_penalty_coeff"
+    Result: เมื่อยืนไกล entrance penalty น้อยลง → threshold ไม่พุ่ง
+
+================================================================================
+END OF DOCUMENT
+================================================================================

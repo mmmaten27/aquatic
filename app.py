@@ -21,7 +21,7 @@ from detection.face_utils import (
     recognize_face, save_face_image, delete_face_folder, clear_face_cache,
     list_face_photos, get_first_photo_path, delete_face_photo, FACES_DB
 )
-from detection.log_utils import dprint, iprint
+from detection.log_utils import dprint, iprint, elog
 
 app = Flask(__name__)
 import os as _os
@@ -114,7 +114,7 @@ EXIT_CONFIRM_DELAY_SEC = 8    # wait N sec for presence to clear before logging 
 EXIT_MAX_WAIT_SEC      = 30   # max timeout for exit confirmation
 UNKNOWN_COOLDOWN_SEC   = 300  # min sec (5 min) between unknown-person alerts per camera
 SURV_DETECT_INTERVAL   = 0.5  # sec: surv detect loop interval
-SURV_FACE_INTERVALS    = {1: 1.0, 2: 1.0, 3: 3.0}  # sec: face rec rate limit per cam (cam2=fast, cam3=no face rec)
+SURV_FACE_INTERVALS    = {1: 1.0, 2: 1.0, 3: 1.0}  # sec: face rec rate limit per cam
 
 # ── Multi-frame voting: force-accept if face rec can't decide but keeps seeing same candidate ──
 SURV_VOTE_CAMS        = {1}         # which cameras use voting (CAM1 entrance = ambiguous-prone)
@@ -209,7 +209,7 @@ def init_yolo_camera():
 
 
 def init_surveillance_cameras():
-    """Initialize all surveillance cameras (1, 2, 3)."""
+    """Initialize all surveillance cameras (1, 2, 3) with staggered delay."""
     global surv_caps, surv_online
     for cam_id in SURV_IDS:
         phys_idx = SURV_CAM_IDX.get(cam_id)
@@ -219,6 +219,7 @@ def init_surveillance_cameras():
         try:
             if surv_caps.get(cam_id) is not None:
                 surv_caps[cam_id].release()
+            time.sleep(0.8)   # stagger: don't open all cameras simultaneously
             c = cv2.VideoCapture(phys_idx, cv2.CAP_MSMF)
             if c.isOpened():
                 c.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
@@ -261,10 +262,11 @@ def close_all_cameras():
             print(f"❌ 攝影機 {cam_id}: 關閉失敗 - {e}")
     surv_caps.clear()
 
-def _flush_camera(cap, n=15):
-    """Read and discard N frames to flush DirectShow initial black frames."""
+def _flush_camera(cap, n=5):
+    """Discard initial frames with delay to let MSMF warm up."""
     for _ in range(n):
         cap.read()
+        time.sleep(0.05)
 
 
 def surv_capture_loop(cam_id, phys_idx):
@@ -304,15 +306,15 @@ def surv_capture_loop(cam_id, phys_idx):
             if not success:
                 consecutive_fail += 1
                 print(f"⚠️ CAM{cam_id}: read() failed (#{consecutive_fail})")
-                if consecutive_fail < 8:
+                if consecutive_fail < 12:
                     # Transient failure — wait briefly and retry without reconnecting
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                     continue
                 # Persistent failure → full reconnect
                 print(f"⚠️ CAM{cam_id}: {consecutive_fail} consecutive failures — disconnecting")
                 consecutive_fail = 0
                 surv_online[cam_id] = False
-                time.sleep(1)
+                time.sleep(3)   # wait longer for MSMF driver to release
                 old_cap = surv_caps.get(cam_id)
                 if old_cap:
                     try:
@@ -320,6 +322,7 @@ def surv_capture_loop(cam_id, phys_idx):
                     except Exception:
                         pass
                 surv_caps[cam_id] = None
+                time.sleep(1)   # extra gap after release before re-open
                 refresh_camera_indices()
                 cur_idx = SURV_CAM_IDX.get(cam_id, phys_idx)
                 new_cap = cv2.VideoCapture(cur_idx, cv2.CAP_MSMF)
@@ -328,9 +331,10 @@ def surv_capture_loop(cam_id, phys_idx):
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     _flush_camera(new_cap)
+                    time.sleep(1)   # warmup before going online
                     surv_caps[cam_id]   = new_cap
                     surv_online[cam_id] = True
-                    print(f"🔄 攝影機 {cam_id} (index {cur_idx}): 重新連接成功")
+                    elog(f"📷 CAM{cam_id} | reconnected (index {cur_idx})")
                 else:
                     new_cap.release()
                 continue
@@ -396,13 +400,13 @@ def yolo_capture_loop():
             if not success:
                 print(f"⚠️ YOLO CAM (index {YOLO_CAM_IDX}): read() failed — going offline")
                 yolo_online = False
-                time.sleep(1)
+                time.sleep(3)   # wait longer for MSMF driver to release
                 try:
                     yolo_cap.release()
                 except Exception:
                     pass
                 yolo_cap = None
-                # Refresh indices before reconnect (cameras may have shifted)
+                time.sleep(1)   # extra gap after release before re-open
                 refresh_camera_indices()
                 now = time.time()
                 if last_frame_time > 0 and (now - last_frame_time) > 3:
@@ -412,10 +416,12 @@ def yolo_capture_loop():
                     new_cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
                     new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                    _flush_camera(new_cap)
+                    time.sleep(1)   # warmup before going online
                     yolo_cap    = new_cap
                     yolo_online = True
                     last_frame_time = time.time()
-                    print(f"🔄 YOLO CAM (index {YOLO_CAM_IDX}): 重新連接成功")
+                    elog(f"📷 YOLO | reconnected (index {YOLO_CAM_IDX})")
                 else:
                     new_cap.release()
                 continue
@@ -522,7 +528,8 @@ def yolo_capture_loop():
                                  if rule["name"] == r_name),
                                 r_name
                             )
-                            update_sighting(folder, r_name, 'yolo')
+                            update_sighting(folder, r_name, 'yolo',
+                                            confidence=r.get("confidence", 0.0))
                     # Unknown tracks are handled deferred via _cleanup_stale_tracks
                     # so we don't call update_unknown_sighting here anymore
 
@@ -913,7 +920,7 @@ def face_recognition_loop():
                     track_identity[tid] = result
                     track_crop_buffer.pop(tid, None)  # clear buffer
                     track_first_seen.pop(tid, None)   # cancel pending unknown alert
-                    print(f"✅ TRACK {tid}: identified as {name} ({status}) conf={result.get('confidence',0):.2f}")
+                    elog(f"👁  YOLO | {name} ({status}) conf={result.get('confidence',0):.2f}")
                     # Feed into state machine
                     folder = next(
                         (r["face_folder"] for r in access_rules_cache if r["name"] == name),
@@ -1158,7 +1165,7 @@ def surv_detect_loop(cam_id):
                     surv_track_first_seen.pop(tid, None)  # cancel deferred alert
                     identified_any = True
                     final_result   = result
-                    print(f"👁️  CAM{cam_id} TRACK {tid}: {r_name} ({r_status}) conf={result.get('confidence',0):.2f}")
+                    elog(f"👁  CAM{cam_id} | {r_name} ({r_status}) conf={result.get('confidence',0):.2f}")
                 else:
                     if tid not in surv_track_first_seen:
                         surv_track_first_seen[tid] = now
@@ -1537,7 +1544,7 @@ def update_unknown_sighting(cam_id, frame_img=None):
            f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n"
            f"📍 IoT Lab")
     send_telegram_notification(msg, img_path)
-    print(f"⚠️ UNKNOWN: cam{cam_id} alert sent")
+    elog(f"⚠️ UNKNOWN | cam{cam_id} | alert sent")
 
 
 def _do_notify_unknown_left(cam_id):
@@ -1748,7 +1755,7 @@ def unified_state_machine():
                         yolo_conf  = state.get('last_confidence', {}).get('yolo', 0.0)
                         cam1_solo  = cam1 and cam1_conf >= 0.50
                         cam2_solo  = cam2 and cam2_conf >= CAM2_SOLO_CONFIDENCE
-                        yolo_solo  = yolo_seen and yolo_conf >= 0.60
+                        yolo_solo  = yolo_seen and yolo_conf >= 0.65
                         cross_conf = cam1 and cam2
                         dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) yolo={yolo_seen}({yolo_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} yolo_solo={yolo_solo} cross={cross_conf}")
                         if cam1_solo or cam2_solo or cross_conf or yolo_solo:
@@ -1761,7 +1768,7 @@ def unified_state_machine():
                                       "cam2 solo" if cam2_solo else
                                       "yolo solo" if yolo_solo else
                                       "cam1+cam2 cross")
-                            print(f"🚪 ENTER trigger: {name} ({reason})")
+                            elog(f"🚪 ENTER | {name} | {reason}")
                             record_entry(name)
                             _save_event_capture("ENTER")
                             with event_capture_lock:
@@ -1816,7 +1823,7 @@ def unified_state_machine():
                                         latest_event_person = name
                                     record_exit(name)
                                     reason = "所有鏡頭都看不見"
-                                    print(f"🚪 EXIT CONFIRMED: {name} ({reason})")
+                                    elog(f"🚪 EXIT  | {name} | {reason}")
                                     threading.Thread(target=_do_notify_exit,
                                                      args=(name, face_folder, dur), daemon=True).start()
                                 else:
@@ -2022,6 +2029,33 @@ def get_detection_stats():
     except Exception as e:
         print(f"❌ GET DATA: Failed to retrieve detection stats - {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/room/reset', methods=['POST'])
+@login_required
+def reset_room_state():
+    """Clear all in-memory room state + DB occupants log."""
+    with person_state_lock:
+        for st in person_state.values():
+            st['inside']          = False
+            st['entered_at']      = None
+            st['entered_at_timestamp'] = None
+            st['exit_pending']    = False
+            st['exit_started_at'] = 0
+            for k in st.get('last_seen', {}):
+                st['last_seen'][k] = 0
+    with occupancy_lock:
+        room_occupants.clear()
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute('DELETE FROM room_occupants_log')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ RESET: DB clear failed - {e}")
+    elog("🔄 ROOM RESET | manual reset by admin")
+    return jsonify({'ok': True, 'message': '在室狀態已重置'})
+
 
 @app.route('/api/room/status')
 @login_required

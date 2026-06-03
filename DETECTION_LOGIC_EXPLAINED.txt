@@ -1,0 +1,498 @@
+================================================================================
+                    อธิบายตรรกะการตรวจจับของระบบ
+          Person Detection + Face Recognition + Access Control
+================================================================================
+
+คำเตือน: เอกสารนี้เขียนให้อ่านง่าย ใช้คำภาษาไทยปนศัพท์เทคนิค
+เพื่อให้เข้าใจหลักการทำงาน ก่อนลงลึกในโค้ด
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 1 — PERSON DETECTION (YOLO: You Only Look Once)                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+1.1 หลักการ: YOLO คืออะไร?
+─────────────────────────────────────────────────────────────────────────────
+
+YOLO (You Only Look Once) คือ object detection model ที่ใช้ Convolutional
+Neural Network (CNN) ในการตรวจจับวัตถุในภาพแบบ Real-time
+
+ Concept สำคัญ:
+   แทนที่จะสไลด์หน้าต่าง (sliding window) หรือแยก Region proposals
+   (แบบ R-CNN), YOLO มองภาพทั้งภาพครั้งเดียว (one look) แล้วตอบว่า:
+     - มีอะไรอยู่ในภาพ? (class: person, car, dog, …)
+     - อยู่ตรงไหน? (bounding box: x1,y1,x2,y2)
+     - แน่ใจแค่ไหน? (confidence score: 0.0-1.0)
+
+  วิธีการ: แบ่งภาพเป็นตาราง S×S. แต่ละ cell ทำนาย B bounding boxes
+  และ class probabilities. ถ้ากลางวัตถุตกใน cell ไหน → cell นั้นรับผิดชอบ
+  วัตถุนั้น.
+
+  YOLOv8 (ที่เราใช้) ปรับปรุงจาก v1-v7:
+    - ใช้ Anchor-Free Detection (ไม่ต้องกำหนด anchor box ล่วงหน้า)
+    - ใช้ CSPDarknet backbone + PAN-FPN neck + Decoupled head
+    - รองรับ Task หลายอย่าง: detect, segment, classify, pose
+    - เราโหลดโมเดล yolov8n.pt (n = nano, เล็กสุด เร็วสุด)
+
+1.2 ในโค้ดของเรา: เราใช้ YOLO ยังไง?
+─────────────────────────────────────────────────────────────────────────────
+
+  โหลดโมเดล (app.py ~line 2441-2442):
+    model = YOLO("yolov8n.pt")       # สำหรับ YOLO CAM ใช้ .track()
+    surv_model = YOLO("yolov8n.pt")  # สำหรับ Surveillance ใช้ .predict()
+
+  แยก instance model เป็น 2 ตัว เพราะ:
+    - YOLO CAM ใช้ track() ซึ่งมี internal state (tracker)
+    - Surveillance ใช้แค่ predict() เพื่อ detection อย่างเดียว
+    - แยกกันป้องกัน state ชนกัน
+
+  เรียกใช้:
+    # YOLO CAM (yolo_capture_loop):
+    model.track(img, classes=[0], persist=True, verbose=False)
+      → classes=[0] = detect เฉพาะ class "person"
+      → persist=True = ให้ tracker จำ id ข้ามเฟรม
+      → ได้ track_id + bounding box + confidence
+
+    # Surveillance (surv_detect_loop):
+    surv_model(img, classes=[0], verbose=False)
+      → แค่ detect อย่างเดียว ไม่ track
+      → เราใช้ IoU matching แทน (ดู Part 4)
+
+  กรองด้วย MIN_CONFIDENCE = 0.70 (config.py):
+    valid = [b for b in raw_boxes if float(b.conf[0]) >= 0.70]
+
+  ทำไมต้อง 0.70? → trade-off ระหว่างแม่น vs ตรวจจับได้
+    - ถ้าต่ำไป → false positive สูง (แสง เงา ขยับ)
+    - ถ้าสูงไป → miss detection (คนอยู่ไกล, มืด)
+
+
+1.3 Motion Detection Gate (ประหยัดทรัพยากร)
+─────────────────────────────────────────────────────────────────────────────
+
+  เราเพิ่ม motion detection ก่อนเรียก YOLO เพื่อลดการใช้ GPU/CPU:
+
+  หลักการ: frame difference
+    - เก็บ grayscale frame ก่อนหน้า (prev_gray)
+    - frame ใหม่ → cv2.absdiff(prev_gray, gray)
+    - threshold > 30 → pixel change
+    - countNonZero → นับจำนวน pixel ที่เปลี่ยน
+
+  เงื่อนไข (app.py ~line 424-434):
+    run_yolo_now = motion_px > MOTION_PIXEL_THRESHOLD (1500)
+                  or time > last_forced + MOTION_FORCED_INTERVAL (30s)
+
+  1500 pixel change ≈ 0.5% ของ 640×480 = มีคนเดินผ่านจริงๆ
+  ถ้าไม่มี motion → ข้าม YOLO → ลดการใช้ทรัพยากร ~70-80%
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 2 — FACE RECOGNITION (InsightFace + ArcFace)                       ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+2.1 หลักการ: Face Recognition คืออะไร?
+─────────────────────────────────────────────────────────────────────────────
+
+Face Recognition = ระบบที่บอกว่า "หน้านี้คือใคร" โดยเทียบกับฐานข้อมูล
+ที่เรามีรูปอยู่แล้ว.
+
+  ขั้นตอนพื้นฐาน:
+    1. Face Detection → หาว่าใบหน้าอยู่ตรงไหนในภาพ
+    2. Face Alignment → ปรับหน้าตรง (หมุน, scale)
+    3. Feature Extraction → แปลงใบหน้าเป็นตัวเลข (embedding)
+    4. Matching → เทียบ embedding กับที่เก็บไว้ใน DB
+
+  เราใช้ InsightFace library ซึ่งใช้ ArcFace loss ในการ train:
+    - ArcFace = Angular Margin Cosine Loss
+    - ฝึกให้ embedding ของคนเดียวกันอยู่ใกล้กัน, คนละคนอยู่ไกลกัน
+    - สร้าง hyper-sphere ที่ class ต่างๆ แยกกันด้วย angular margin
+
+2.2 Embedding คืออะไร?
+─────────────────────────────────────────────────────────────────────────────
+
+Embedding =  vector ของตัวเลข (128-dimension) ที่แทนใบหน้า
+
+  อุปมา:
+    คิดว่า embedding คือ "ลายเซ็นดิจิทัล" ของใบหน้า
+    หน้าคนเดียวกัน → ลายเซ็นคล้ายกัน (มุมระหว่าง vector แคบ)
+    หน้าคนละคน   → ลายเซ็นต่างกัน (มุมระหว่าง vector กว้าง)
+
+  ในโค้ด:
+    face.embedding  → 128 floats
+    emb /= np.linalg.norm(emb)  → Normalize to unit length (L2 norm)
+    ทำให้อยู่ใน "unit sphere" → cosine distance ≈ angular distance
+
+  Cosine Distance:
+    dist = 1.0 - dot(emb1, emb2)
+      → 0.0 = เหมือนกันทุกประการ
+      → 1.0 = ตรงข้ามกันโดยสิ้นเชิง
+      → 0.5 = กึ่ง ๆ
+
+  Confidence = 1.0 - best_dist
+    → 0.51 = ระยะ cosine 0.49 → ถือว่าจับคู่ได้
+
+
+2.3 ฐานข้อมูลของเรา (Face DB)
+─────────────────────────────────────────────────────────────────────────────
+
+  Physical (faces_db/):
+    faces_db/Std001/photo1.jpg
+    faces_db/Std001/photo2.jpg
+    faces_db/Std001/photo3.jpg
+    faces_db/std002/photo1.jpg ~ photo9.jpg
+
+  Cache (ใน RAM):
+    _build_db() → อ่านทุกรูป → extract embedding → เก็บใน _db dict
+    _db = {
+      "Std001": [emb1, emb2, emb3, mean_emb],
+      "std002": [emb1, emb2, ..., mean_emb],
+    }
+
+  ทำไมต้องมีหลาย embedding ต่อคน?
+    - รูปแต่ละมุมให้ embedding ต่างกันนิดหน่อย
+    - มีหลายรูป → มีหลายมุม → match ได้ดีขึ้น
+    - มี mean_emb (เฉลี่ย) → stable canonical vector
+
+  Cache ถูกสร้างตอน start และ rebuild เมื่อมีเพิ่ม/ลบรูป
+
+
+2.4 Pipeline จริงในโค้ด (recognize_face)
+─────────────────────────────────────────────────────────────────────────────
+
+  ขั้นตอนเรียงตามลำดับ:
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  1. Lighting Normalization  (CLAHE)                        │
+  │     → แก้แสงไม่เท่า (เช่น ครึ่งหน้ามืดครึ่งสว่าง)           │
+  │     → CLAHE = Contrast Limited Adaptive Histogram Equal.   │
+  │     → ใช้เฉพาะ L channel (Lightness) ใน LAB color space   │
+  ├─────────────────────────────────────────────────────────────┤
+  │  2. Face Detection                                         │
+  │     → InsightFace detector (RetinaFace / SCRFD)            │
+  │     → return faces list with bbox, det_score, landmark     │
+  │     → เลือก face ใหญ่สุด (สมมติว่าคนที่สนใจอยู่ใกล้)       │
+  ├─────────────────────────────────────────────────────────────┤
+  │  3. Quality Gate (det_score)                                │
+  │     → det_score ≈ 0.0-1.0 (quality of detection)           │
+  │     → CAM2 profile: quality ≥ 0.42                         │
+  │     → reject ถ้าเบลอหรือเห็นหน้าไม่ชัด                     │
+  ├─────────────────────────────────────────────────────────────┤
+  │  4. Size Gate                                               │
+  │     → face_width, face_height < min_size → reject          │
+  │     → min_size = 22px (per CAM_PROFILE)                    │
+  │     → ถ้า < SOFT_SIZE_THRESHOLD (50px) → size_penalty      │
+  │       penalty = (1 - ratio) * coeff                        │
+  │       ratio = min(w,h) / 50                                 │
+  │       CAM1 coeff = 0.04, อื่น = 0.08                        │
+  │     → size_penalty เพิ่ม effective_threshold                │
+  │       threshold รวม = sim_thresh + size_penalty            │
+  ├─────────────────────────────────────────────────────────────┤
+  │  5. Feature Extraction                                      │
+  │     → ArcFace model → 128-dim embedding                    │
+  │     → Normalize L2 → unit vector                           │
+  ├─────────────────────────────────────────────────────────────┤
+  │  6. Database Matching                                       │
+  │     → วนลูปทุก embedding ใน _db                             │
+  │     → คำนวณ cosine distance (1 - dot)                     │
+  │     → หา best_dist (ใกล้สุด) และ second_dist (รองลงมา)    │
+  │     → best_folder คนที่ใกล้ที่สุด                           │
+  ├─────────────────────────────────────────────────────────────┤
+  │  7. Threshold Check                                         │
+  │     → best_dist < effective_threshold? (sim_thresh + penalty)│
+  │     → CAM1: best_dist < 0.55 + penalty?                    │
+  │     → ถ้าไม่ผ่าน → return unknown พร้อม candidate           │
+  ├─────────────────────────────────────────────────────────────┤
+  │  8. Inter-Class Margin Check                                │
+  │     → margin = second_dist - best_dist                     │
+  │     → margin < MIN_INTERCLASS_MARGIN (0.08)?               │
+  │       → แสดงว่า 2 คนนี้ embedding ใกล้กันเกิน              │
+  │       → ระบบแยกไม่ออก → reject → ambiguous                │
+  │     → ข้อยกเว้น: skip check ถ้า:                           │
+  │       a) best_dist < HIGH_CONF_THRESHOLD (0.35)            │
+  │          → เชื่อมั่นมาก → ไม่ต้องตรวจ margin                │
+  │       b) best_folder == second_folder                       │
+  │          → ทั้งคู่ชี้คนเดียวกัน → same-person bypass        │
+  ├─────────────────────────────────────────────────────────────┤
+  │  9. Return Result                                           │
+  │     → สำเร็จ: {name, status, confidence}                   │
+  │     → ไม่สำเร็จ: {name:None, candidate, candidate_conf}    │
+  └─────────────────────────────────────────────────────────────┘
+
+
+2.5 Per-Camera Profiles Module
+─────────────────────────────────────────────────────────────────────────────
+
+  ทำไมต้องมี profile แยกตามกล้อง?
+    - กล้องแต่ละตัวมุมต่างกัน ระยะห่างต่างกัน
+    - CAM2 (side view) เห็นหน้าชัดกว่า CAM1 (entrance)
+    - CAM3 (exit) อาจเห็นหลังคน → quality ลดลง
+
+  CAM_PROFILE ปัจจุบัน (face_utils.py):
+    CAM0 (YOLO):  sim_thresh=0.55, quality=0.40, coeff=0.08
+    CAM1 (入口):   sim_thresh=0.55, quality=0.40, coeff=0.04 ← แก้ไข
+    CAM2 (室内):   sim_thresh=0.50, quality=0.42, coeff=0.08
+    CAM3 (出口):   sim_thresh=0.55, quality=0.38, coeff=0.08
+
+  หมายเหตุ:
+    - CAM2 threshold 0.50 (เข้มงวดสุด) เพราะเป็น primary face cam
+    - CAM1 quality 0.40 + penalty coeff 0.04 (รองรับ entrance)
+    - CAM3 quality 0.38 (เผื่อเห็นหลังหรือมุมไม่ดี)
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 3 — ACCESS CONTROL STATE MACHINE                                   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+3.1 หลักการ: State Machine คืออะไร?
+─────────────────────────────────────────────────────────────────────────────
+
+State Machine = ระบบที่มีสถานะ (state) และกฎการเปลี่ยนสถานะ (transition)
+โดยอิงจาก input (events) ที่เข้ามา.
+
+  ในระบบเรา:
+    State    = person อยู่ในห้อง (inside=True/False)
+    Events   = กล้องเห็นคนตัวไหน ที่ confidence เท่าไหร่
+    Inputs   = last_seen timestamp, last_confidence
+    Outputs  = ENTER event, EXIT event
+
+  concept:
+    ┌─────────────────────────────────────────────────────┐
+    │                                                      │
+    │   outside ──(cam1_solo/cam2_solo/cross)──► inside   │
+    │      ▲                                               │
+    │      └──────(cam3 + confirm离开)───────             │
+    │                                                      │
+    └─────────────────────────────────────────────────────┘
+
+3.2 ในโค้ดของเรา: unified_state_machine()
+─────────────────────────────────────────────────────────────────────────────
+
+  ทำงานทุก 1 วินาที, วนลูปทุกคนใน person_state.
+
+  การเช็ค "กล้องเห็นคนหรือยัง?" ใช้ last_seen + time window:
+    cam1_sees = now - state.last_seen[1] < ENTRY_WINDOW_SEC (12s)
+    cam2_sees = now - state.last_seen[2] < ENTRY_WINDOW_SEC (12s)
+    cam3_sees = now - state.last_seen[3] < EXIT_WINDOW_SEC (8s)
+
+  เงื่อนไข ENTER (คนยังไม่อยู่ในห้อง):
+    • cam1_solo  = cam1_sees AND confidence >= 0.40
+    • cam2_solo  = cam2_sees AND confidence >= CAM2_SOLO_CONFIDENCE (0.50)
+    • cross_conf = cam1_sees AND cam2_sees (confidence ไม่สำคัญ)
+
+  เงื่อนไข EXIT (คนอยู่ในห้อง):
+    Stage 1: cam3_sees → ตั้ง exit_pending = True
+    Stage 2: รอ EXIT_CONFIRM_DELAY_SEC (8s)
+      - ไม่มีกล้องไหนเห็นแล้ว → confirm EXIT
+      - ยังมีกล้องเห็น → cancel EXIT
+      - เกิน EXIT_MAX_WAIT_SEC (30s) → force EXIT
+
+  Grace Period (ป้องกัน false exit):
+    ถ้า enter มาสดๆร้อนๆ < 30s → ignore exit trigger
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 4 — IoU TRACKING (แทนที่ YOLO tracker สำหรับ Surveillance)          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+4.1 หลักการ: IoU Tracking คืออะไร?
+─────────────────────────────────────────────────────────────────────────────
+
+IoU (Intersection over Union) = พื้นที่ซ้อนทับ / พื้นที่รวม
+ใช้วัดว่า bounding box สองอันซ้อนทับกันแค่ไหน.
+
+  IoU = area(B1 ∩ B2) / area(B1 ∪ B2)
+    0.0 = ไม่ซ้อนทับเลย
+    1.0 = ซ้อนทับกันพอดี
+
+  Tracking ด้วย IoU = จับคู่ boxes ใน frame ปัจจุบัน กับ boxes ใน frame
+  ที่แล้ว โดยใช้ IoU ถ้าซ้อนทับกันมาก → น่าจะเป็นคนเดียวกัน → same track ID.
+
+  Center Distance Fallback:
+    ถ้า IoU น้อยเกินไป (คนเดินเร็ว) → ใช้ distance ระหว่าง center point
+    ถ้า center ขยับไม่เกิน 20% ของ frame width → same track.
+
+    เหตุผล: กล้อง surveillance ทำงานที่ ~2 fps → คนอาจขยับระหว่างเฟรม
+    IoU อาจน้อย → fallback ใช้ center distance แทน
+
+4.2 ในโค้ดของเรา: _match_boxes()
+─────────────────────────────────────────────────────────────────────────────
+
+  Input: prev_tracks = [(box_xyxy, track_id), ...]
+         curr_boxes  = [box_xyxy, ...]
+  Output: {curr_idx: track_id} mapping
+
+  Algorithm:
+    1. สำหรับทุก curr_box:
+       a. คำนวณ IoU กับทุก prev_box → ได้ best_iou + best_tid
+       b. คำนวณ center distance fallback → ได้ best_dist + best_tid
+       c. เลือก IoU match ก่อน; ถ้าไม่มี → center fallback
+    2. curr_box ที่ match ไม่ได้ → new track id
+
+  Parameters:
+    IOU_THRESHOLD     = 0.15  (IoU ≥ 15% = same person)
+    CENTER_DIST_LIMIT = 0.20  (center ≤ 20% frame width)
+    → 640px * 0.20 = 128px
+
+  ทำไมต้อง custom tracking แทน YOLO tracker?
+    - surv_model แยก instance ไม่มี internal tracker state
+    - แต่ละ camera มี surv_detect_loop ของตัวเอง → track per camera
+    - เลยใช้ IoU matching แบบง่ายๆ
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 5 — MULTI-FRAME VOTING (Ambiguous Bypass)                         ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+5.1 ปัญหาที่เจอ
+─────────────────────────────────────────────────────────────────────────────
+
+  Std001 กับ std002 มีใบหน้าคล้ายกัน (มองจากมุมกล้อง) ทำให้ embedding
+  distance ใกล้กันมาก → margin ~0.018 < MIN_INTERCLASS_MARGIN(0.08)
+  → ระบบ reject ตลอด (ambiguous) → ถึงยืนหน้ากล้องนานก็ไม่ถูก识别
+
+5.2 วิธีแก้: Multi-Frame Voting
+─────────────────────────────────────────────────────────────────────────────
+
+  หลักการ:
+    แทนที่จะตัดสินจากเฟรมเดียว → สะสม "คะแนน" ข้ามหลายเฟรม
+    ถ้าเฟรมที่ 1 reject → แต่บอกว่า "candidate = Std001"
+    เฟรมที่ 2 ก็ Std001 → vote++
+    เฟรมที่ 3 ก็ Std001 → vote >= 3 → force accept!
+
+  ทำไม 3 เฟรม?
+    - 1-2 เฟรมอาจเป็น noise (คนเดินผ่าน, มุมแปลก)
+    - 3 เฟรม (~3-6 วินาที) = ยืนนิ่งๆ จริง
+
+  Vote Expiry:
+    vote เก่ากว่า 15 วินาที → reset (คนนั้นเดินไปแล้ว)
+
+  ในโค้ด:
+    surv_vote_counts[candidate]++ ทุกเฟรมที่ reject + candidate เดิม
+    ถ้า >= SURV_VOTE_THRESHOLD[cam_id] (CAM1 = 3) → force accept
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 6 — BEST-FRAME SELECTION                                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+6.1 หลักการ
+─────────────────────────────────────────────────────────────────────────────
+
+  ไม่ใช่ทุก frame ที่เห็นหน้าแล้วชัด → บาง frame คนกำลังขยับหรือเบลอ
+  → เรา buffer หลาย frame (BEST_FRAME_BUFFER_SIZE=5)
+  → แล้วเลือก frame ที่ "ดีที่สุด" มาทำ face recognition.
+
+  Scoring:
+    score = max_conf * 0.6 + sharpness * 0.4
+      - max_conf = confidence YOLO สูงสุด (0.0-1.0)
+      - sharpness = variance of Laplacian / 300.0 (normalized 0.0-1.0)
+      - sharpness สูง = ภาพคมชัด
+
+6.2 ในโค้ด
+─────────────────────────────────────────────────────────────────────────────
+
+  surv_detect_loop ~line 1058-1066:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    sharpness = min(Laplacian_var / 300.0, 1.0)
+    score = max_conf * 0.6 + sharpness * 0.4
+
+  เลือก frame ที่ score สูงสุดเมื่อต้องทำ face rec:
+    best_entry = max(best_frame_buffers[cam_id], key=lambda x: x[0])
+    ถ้า score > 0.5 → ใช้ best frame แทน frame ปัจจุบัน
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 7 — EVENT-BASED OCCUPANCY COUNTER                                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+7.1 หลักการ
+─────────────────────────────────────────────────────────────────────────────
+
+  แทนที่จะนับ "กี่คนในภาพ" → นับ "กี่คนที่ ENTER แล้วยังไม่ EXIT"
+  วิธีนี้แม่นยำกว่า เพราะไม่ขึ้นกับมุมกล้อง
+
+  ตัวแปร:
+    room_occupants = {name: {entry_time, last_seen}}
+
+  Event:
+    ENTER → record_entry(name) → เพิ่มใน room_occupants
+    EXIT  → record_exit(name) → ลบออกจาก room_occupants
+
+  Safety Net (stale cleanup):
+    ถ้าคนใน occupancy ไม่ถูก detect โดยกล้องไหนเลย > 300s (5 นาที)
+    → ถือว่าออกไปแล้ว → auto EXIT
+
+  ทำไมต้องมี Safety Net?
+    - กล้องอาจพลาด (blind spot, มุมอับ)
+    - ระบบ restart → กู้คืนจาก room_occupants_log
+    - ป้องกัน occupancy ค้าง
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 8 — UNKNOWN PERSON ALERT                                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+8.1 หลักการ
+─────────────────────────────────────────────────────────────────────────────
+
+  เมื่อเจอคนที่ระบบ identify ไม่ได้ → แจ้งเตือน "มีคนไม่รู้จัก"
+  แต่ต้องไม่แจ้งถ้าคนแค่เดินผ่าน (false alarm)
+
+  กลไก Deferred Alert:
+    - เมื่อเจอ unknown track → จับเวลา UNKNOWN_DEFER_SEC (15s)
+    - ถ้า track ยัง unknown ครบ 15s → alert
+    - ถ้า identify ได้ก่อน 15s → cancel alert
+
+  Cooldown:
+    - กล้องเดียวกัน alert ถัดไปต้องห่างกัน UNKNOWN_COOLDOWN_SEC (300s = 5 นาที)
+
+  Left Notification:
+    - เมื่อ unknown หายไปจากกล้อง ≥ 30s → ส่ง "unknown person left"
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   PART 9 — สรุป Data Flow เชิงปฏิบัติ: "เกิดอะไรขึ้นเมื่อมีคนเดินเข้าห้อง"   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+  Scenario: Tongen (Std001) เดินเข้าห้องปฏิบัติการ
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                          │
+  │  1. Tongen เดินมาที่ประตู                                                │
+  │     ├─ CAM1 (Entrance) จับ motion → YOLO detect คน                     │
+  │     ├─ crop head region → recognize_face()                              │
+  │     ├─ ArcFace พบ best=Std001, 2nd=std002, margin=0.018                │
+  │     ├─ margin < 0.08 → AMBIGUOUS → return unknown(candidate=Std001)    │
+  │     ├─ surv_vote_counts["Std001"] += 1                                  │
+  │     ├─ เฟรมถัดไป → อีก 3 ครั้ง → vote >= 3                             │
+  │     └─ VOTE FORCE: Std001 → surv_track_ident[tid] = Std001              │
+  │                                                                          │
+  │  2. Tongen ก้าวเข้าประตู → CAM2 เห็นหน้า                                │
+  │     ├─ CAM2 (side) detect + face rec                                   │
+  │     ├─ ArcFace พบ best=Std001, best_dist=0.49 → confidence=0.51        │
+  │     ├─ confidence 0.51 >= 0.50 ✅                                       │
+  │     ├─ update_sighting("Std001", "Tongen", 2, confidence=0.51)         │
+  │     └─ update_occupancy_last_seen("Tongen")                             │
+  │                                                                          │
+  │  3. unified_state_machine() ทุก 1 วิ                                    │
+  │     ├─ chek cam2 = True (seen within 12s)                               │
+  │     ├─ cam2_conf = 0.51 >= 0.50 → cam2_solo = True                    │
+  │     ├─ ENTER trigger! → inside = True                                  │
+  │     ├─ record_entry("Tongen") → 在室人员 +1                            │
+  │     ├─ _save_event_capture("ENTER")                                     │
+  │     └─ Telegram (ถ้านอกเวลางาน)                                        │
+  │                                                                          │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

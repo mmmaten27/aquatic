@@ -494,9 +494,14 @@
                         <span class="text-base">🏠</span>
                         <span class="font-bold text-sm text-slate-800">在室人員</span>
                         <span id="occupant-count-badge"
-                              class="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 hidden"></span>
+                              class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 hidden"></span>
                         <span id="occupant-empty-badge"
-                              class="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">空室</span>
+                              class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">空室</span>
+                        <button onclick="resetRoomState()"
+                                class="ml-auto text-[10px] px-2 py-0.5 rounded-lg bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 border border-red-100 transition-colors"
+                                title="重置在室狀態">
+                            重置
+                        </button>
                     </div>
                     <div id="occupant-list" class="flex flex-wrap gap-2 min-h-[40px] items-center">
                         <span class="text-slate-400 text-xs">尚無人員在室內</span>
@@ -1262,7 +1267,7 @@
             const names = { ph: 'pH', temp: '溫度', do: 'DO' };
             const label = names[sensorType] || sensorType;
             try {
-                const msg = `✅ 魚缸 ${tankId} - ${label} กลับมาปกติแล้ว (${value})\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
+                const msg = `✅ 魚缸 ${tankId} - ${label} 已恢復正常 (${value})\n🕐 ${new Date().toLocaleString('zh-TW')}\n📍 魚菜共生監控系統`;
                 await fetch('/api/send-sensor-message', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1394,6 +1399,19 @@
         }
 
         setTimeout(() => { fetchRoomHistory(); setInterval(fetchRoomHistory, 6000); }, 800);
+
+        // --- 在室人員 Reset ---
+        async function resetRoomState() {
+            if (!confirm('確定要重置在室狀態嗎？')) return;
+            try {
+                const res = await fetch('/api/room/reset', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    lastOccupantsData = [];
+                    renderOccupants();
+                }
+            } catch(e) { console.error('Reset failed', e); }
+        }
 
         // --- 在室人員 ---
         let lastOccupantsData = [];
