@@ -76,7 +76,7 @@ face_work_event          = threading.Event()
 # Track buffer: per track_id keep N recent face crops + identity
 TRACK_BUFFER_SIZE     = 3          # max crops per track
 TRACK_CLEANUP_TIMEOUT = 5.0        # seconds without sighting → remove track
-UNKNOWN_DEFER_SEC     = 15         # wait N sec before sending "unknown" alert (CAM1 entrance door)
+UNKNOWN_DEFER_SEC     = 8          # wait N sec before sending "unknown" alert (CAM1 entrance door)
 track_crop_buffer     = {}         # {track_id: [crop_img, ...]}
 track_identity        = {}         # {track_id: {name, status, confidence}}
 track_last_seen       = {}         # {track_id: timestamp}
@@ -118,7 +118,7 @@ SURV_FACE_INTERVALS    = {1: 1.0, 2: 1.0, 3: 1.0}  # sec: face rec rate limit pe
 
 # ── Multi-frame voting: force-accept if face rec can't decide but keeps seeing same candidate ──
 SURV_VOTE_CAMS        = {1}         # which cameras use voting (CAM1 entrance = ambiguous-prone)
-SURV_VOTE_THRESHOLD   = {1: 2}      # N consistent frames → force accept (cam1=2)
+SURV_VOTE_THRESHOLD   = {1: 5}      # N consistent frames → force accept (cam1=5)
 
 # person_state: {face_folder: {name, inside, entered_at, last_seen, exit_pending, exit_started_at}}
 person_state      = {}
@@ -127,6 +127,7 @@ unknown_last_alert = {}  # {cam_id: last_alert_timestamp}
 unknown_alert_lock = threading.Lock()
 unknown_alert_active = {}    # {cam_id: {"alerted_at": float, "left_notified": bool}}
 unknown_last_seen   = {}    # {cam_id: float} — last time any person was detected by cam
+cam2_last_unknown_time = 0.0  # timestamp when cam2 last detected an unknown person
 
 # Best-frame buffers: keep up to N frames per surv cam, pick sharpest for recognition
 BEST_FRAME_BUFFER_SIZE = 5
@@ -634,30 +635,30 @@ def _ensure_access_rules():
 
 
 def _restore_person_state():
-    """On startup, rebuild person_state from room_occupants_log so EXIT events
-    can still fire correctly even after a server restart."""
+    """On startup, close out any open sessions from the previous run.
+
+    ไม่รู้ว่าตอน shutdown คนออกไปหรือยัง → log EXIT ให้ทุกคนที่ยังอยู่ใน
+    room_occupants_log แล้วล้างตาราง → fresh start ป้องกัน ENTER ซ้ำ
+    """
     conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT face_folder, person_name, entered_at FROM room_occupants_log"
+                "SELECT face_folder, person_name FROM room_occupants_log"
             )
             rows = cur.fetchall()
-        with person_state_lock:
+
+        if rows:
             for r in rows:
-                ff = r["face_folder"]
-                if ff not in person_state:
-                    person_state[ff] = {
-                        "name":            r["person_name"],
-                        "inside":          False,
-                        "entered_at":      None,
-                        "last_seen":       {1: 0, 2: 0, 3: 0, 'yolo': 0},
-                        "last_confidence": {1: 0.0, 2: 0.0, 3: 0.0, 'yolo': 0.0},
-                        "exit_pending":    False,
-                        "exit_started_at": 0,
-                    }
-        print(f"✅ STATE RESTORE: {len(rows)} person(s) restored from room_occupants_log")
+                try:
+                    log_room_event("EXIT", r["person_name"], r["face_folder"], 0)
+                except Exception as ex:
+                    print(f"⚠️ STATE RESTORE: could not log EXIT for {r['person_name']} - {ex}")
+            print(f"✅ STATE RESTORE: logged EXIT for {len(rows)} person(s) from previous session")
+        else:
+            print("✅ STATE RESTORE: no open sessions found")
+
     except Exception as e:
         print(f"⚠️ STATE RESTORE: failed - {e}")
     finally:
@@ -1257,6 +1258,15 @@ def surv_detect_loop(cam_id):
                             surv_track_first_seen.pop(tid, None)
                     if fire_alert and cam_id == 1:
                         update_unknown_sighting(cam_id, img)
+
+            # ── Additional check: fire UNKNOWN for unidentified tracks even when
+            #    another person in the same frame WAS identified (multi-person case)
+            if cam_id == 1 and surv_track_first_seen:
+                for tid, fs in list(surv_track_first_seen.items()):
+                    if now - fs >= UNKNOWN_DEFER_SEC:
+                        update_unknown_sighting(cam_id, img)
+                        surv_track_first_seen.pop(tid, None)
+                        break  # one alert per cycle (cooldown handles the rest)
             else:
                 face_folder = next(
                     (r["face_folder"] for r in access_rules_cache if r["name"] == name),
@@ -1272,6 +1282,16 @@ def surv_detect_loop(cam_id):
                     if _cast_vote(cam_id, face_folder):
                         update_sighting(face_folder, name, cam_id, confidence=conf)
                         update_occupancy_last_seen(name)
+
+            # ── Track when cam2 detects unknown → used to block cam1_solo ──
+            if cam_id == 2 and raw_boxes:
+                any_unknown = False
+                for tid in track_ids:
+                    if tid not in surv_track_ident or surv_track_ident[tid].get("status") == "unknown":
+                        any_unknown = True
+                        break
+                if any_unknown:
+                    cam2_last_unknown_time = now
 
             # Update dashboard — cam_id==2 is the face-level camera (index 2)
             if cam_id == 2 and img is not None:
@@ -1682,6 +1702,9 @@ def _cleanup_stale_occupants():
     """
     Safety net: ถ้าคน inside อยู่นานแต่ไม่ถูกกล้องตรวจจับเกิน STALE_OCCUPANT_SEC
     → ถือว่าออกไปแล้ว (ป้องกัน count ค้าง) และบันทึก EXIT event
+
+    ข้อยกเว้น: ถ้ากล้องที่เห็นล่าสุดคือ 攝影機 1 → ไม่ถือว่าออก
+    เพราะโต๊ะทำงานอยู่ใต้กล้อง 1 (มุมอับ) กล้องอื่นจะไม่เห็นคนที่กำลังนั่งทำงาน
     """
     now = time.time()
     stale = []
@@ -1689,10 +1712,20 @@ def _cleanup_stale_occupants():
         for ff, st in list(person_state.items()):
             if not st.get("inside"):
                 continue
-            # check if ANY camera has seen this person recently
+            last_seen = st.get("last_seen", {})
+            # หากล้องที่เห็นล่าสุด
+            last_cam, _ = max(
+                ((cam, ts) for cam, ts in last_seen.items() if ts > 0),
+                key=lambda x: x[1],
+                default=(None, 0),
+            )
+            # 攝影機 1 อยู่เหนือโต๊ะทำงาน — คนที่นั่งทำงานจะหายจากทุกกล้อง
+            # แต่ไม่ได้ออกไป → ข้ามการตรวจสอบ stale
+            if last_cam == 1:
+                continue
             any_seen = any(
                 now - ts < STALE_OCCUPANT_SEC
-                for ts in st.get("last_seen", {}).values()
+                for ts in last_seen.values()
                 if ts > 0
             )
             if not any_seen:
@@ -1703,6 +1736,8 @@ def _cleanup_stale_occupants():
                 st["exit_started_at"] = 0
     for ff, name in stale:
         record_exit(name)  # also removes from room_occupants
+        threading.Thread(target=log_room_event,
+                         args=("EXIT", name, ff, 0), daemon=True).start()
         print(f"⏱️ OCCUPANCY STALE: {name} ถูกลบ (ไม่เห็นนานเกิน)")
 
 
@@ -1753,11 +1788,12 @@ def unified_state_machine():
                         cam2_conf  = state.get('last_confidence', {}).get(2, 0.0)
                         yolo_seen  = now - state['last_seen'].get('yolo', 0) < ENTRY_WINDOW_SEC
                         yolo_conf  = state.get('last_confidence', {}).get('yolo', 0.0)
-                        cam1_solo  = cam1 and cam1_conf >= 0.50
+                        cam2_unknown_block = (now - cam2_last_unknown_time) < ENTRY_WINDOW_SEC
+                        cam1_solo  = cam1 and cam1_conf >= 0.65 and not cam2_unknown_block
                         cam2_solo  = cam2 and cam2_conf >= CAM2_SOLO_CONFIDENCE
                         yolo_solo  = yolo_seen and yolo_conf >= 0.65
                         cross_conf = cam1 and cam2
-                        dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) yolo={yolo_seen}({yolo_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo} cam2_solo={cam2_solo} yolo_solo={yolo_solo} cross={cross_conf}")
+                        dprint(f"🏠 STATE {face_folder}: inside={state['inside']} cam1={cam1}({cam1_conf:.2f}) cam2={cam2}({cam2_conf:.2f}) yolo={yolo_seen}({yolo_conf:.2f}) cam3={cam3} → cam1_solo={cam1_solo}(block={cam2_unknown_block}) cam2_solo={cam2_solo} yolo_solo={yolo_solo} cross={cross_conf}")
                         if cam1_solo or cam2_solo or cross_conf or yolo_solo:
                             state['inside']       = True
                             state['entered_at']   = datetime.now()
@@ -1791,22 +1827,47 @@ def unified_state_machine():
                             entered_ago = now - state.get('entered_at_timestamp', 0)
 
                             # Check all cameras (cam1, cam2, yolo) for presence
-                            cam1_still_sees = now - state['last_seen'].get(1, 0) < ENTRY_WINDOW_SEC
-                            yolo_still_sees = now - state['last_seen'].get('yolo', 0) < ENTRY_WINDOW_SEC
-                            cam2_still_sees = cam2
+                            cam1_still_sees = now - state['last_seen'].get(1, 0) < PRESENCE_WINDOW_SEC
+                            yolo_still_sees = now - state['last_seen'].get('yolo', 0) < PRESENCE_WINDOW_SEC
+                            cam2_still_sees = now - state['last_seen'].get(2, 0) < PRESENCE_WINDOW_SEC
                             still_sees = cam1_still_sees or cam2_still_sees or yolo_still_sees
 
-                            # Grace period: if just entered (< 30s), don't allow EXIT
+                            # Grace period: if just entered (< 30s), never allow EXIT
+                            # regardless of whether cameras see the person (covers blind spots)
                             MIN_STAY_SEC = 30
                             just_entered = entered_ago < MIN_STAY_SEC
-                            if just_entered and still_sees:
-                                # Ignore exit trigger — person probably just walked past cam3
+                            if just_entered:
                                 state['exit_pending']    = False
                                 state['exit_started_at'] = 0
                                 print(f"↩️ EXIT IGNORED (grace): {state['name']} entered {entered_ago:.0f}s ago")
                                 continue
 
-                            if waited >= EXIT_CONFIRM_DELAY_SEC:
+                            if waited > EXIT_MAX_WAIT_SEC:
+                                if still_sees:
+                                    # กล้องยังเห็นคนอยู่ → ไม่ใช่ exit จริง ยกเลิก
+                                    state['exit_pending']    = False
+                                    state['exit_started_at'] = 0
+                                    src = "CAM1" if cam1_still_sees else ("CAM2" if cam2_still_sees else "YOLO")
+                                    print(f"↩️ EXIT TIMEOUT CANCELLED: {state['name']} — {src} still visible")
+                                else:
+                                    # Timeout fallback — waited too long, force EXIT
+                                    dur  = (datetime.now() - state['entered_at']).total_seconds() \
+                                           if state['entered_at'] else 0
+                                    name = state['name']
+                                    state['inside']          = False
+                                    state['entered_at']      = None
+                                    state['entered_at_timestamp'] = None
+                                    state['exit_pending']    = False
+                                    state['exit_started_at'] = 0
+                                    _save_event_capture("EXIT")
+                                    with event_capture_lock:
+                                        latest_event_type   = "EXIT"
+                                        latest_event_person = name
+                                    record_exit(name)
+                                    print(f"⏱️ EXIT TIMEOUT: {name} (waited {EXIT_MAX_WAIT_SEC}s)")
+                                    threading.Thread(target=_do_notify_exit,
+                                                     args=(name, face_folder, dur), daemon=True).start()
+                            elif waited >= EXIT_CONFIRM_DELAY_SEC:
                                 if not still_sees:
                                     # no camera sees them → person has left the room
                                     dur  = (datetime.now() - state['entered_at']).total_seconds() \
@@ -1831,25 +1892,7 @@ def unified_state_machine():
                                     src = "CAM1" if cam1_still_sees else ("CAM2" if cam2_still_sees else "YOLO")
                                     state['exit_pending']    = False
                                     state['exit_started_at'] = 0
-                                    print(f"↩️ EXIT CANCELLED: {state['name']} — {src} ยังเห็นคนอยู่")
-                            elif waited > EXIT_MAX_WAIT_SEC:
-                                # Timeout fallback — force EXIT
-                                dur  = (datetime.now() - state['entered_at']).total_seconds() \
-                                       if state['entered_at'] else 0
-                                name = state['name']
-                                state['inside']          = False
-                                state['entered_at']      = None
-                                state['entered_at_timestamp'] = None
-                                state['exit_pending']    = False
-                                state['exit_started_at'] = 0
-                                _save_event_capture("EXIT")
-                                with event_capture_lock:
-                                    latest_event_type   = "EXIT"
-                                    latest_event_person = name
-                                record_exit(name)
-                                print(f"⏱️ EXIT TIMEOUT: {name} (รอนานเกิน {EXIT_MAX_WAIT_SEC}s)")
-                                threading.Thread(target=_do_notify_exit,
-                                                 args=(name, face_folder, dur), daemon=True).start()
+                                    print(f"↩️ EXIT CANCELLED: {state['name']} — {src} still visible")
 
         except Exception as e:
             print(f"❌ STATE MACHINE: error - {e}")

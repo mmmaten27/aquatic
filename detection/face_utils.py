@@ -23,7 +23,7 @@ MIN_INTERCLASS_MARGIN = 0.15   # 2nd-best must be this much worse → reject amb
 # cam_id: 0=YOLO cam, 1=cam1, 2=cam2 (primary), 3=cam3 (no face rec normally)
 CAM_PROFILE = {
     0: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.40, "size_penalty_coeff": 0.08},   # 攝影機1 — กลางห้อง, faces start small
-    1: {"min_size": 18, "sim_thresh": 0.45, "quality": 0.35, "size_penalty_coeff": 0.04},   # 攝影機2 — ประตูเข้า, stricter for UNKNOWN detection
+     1: {"min_size": 18, "sim_thresh": 0.45, "quality": 0.50, "size_penalty_coeff": 0.04},   # 攝影機2 — ประตูเข้า, stricter for UNKNOWN detection
     2: {"min_size": 22, "sim_thresh": 0.48, "quality": 0.42, "size_penalty_coeff": 0.08},   # 攝影機3 — มุมห้อง
     3: {"min_size": 22, "sim_thresh": 0.50, "quality": 0.45, "size_penalty_coeff": 0.08},   # 攝影機4 — หันเข้าห้องจับหน้าตอนออก
 }

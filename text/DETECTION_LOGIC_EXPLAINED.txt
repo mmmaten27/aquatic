@@ -111,7 +111,7 @@ Face Recognition = ระบบที่บอกว่า "หน้านี�
 2.2 Embedding คืออะไร?
 ─────────────────────────────────────────────────────────────────────────────
 
-Embedding =  vector ของตัวเลข (128-dimension) ที่แทนใบหน้า
+Embedding =  vector ของตัวเลข (512-dimension) ที่แทนใบหน้า
 
   อุปมา:
     คิดว่า embedding คือ "ลายเซ็นดิจิทัล" ของใบหน้า
@@ -119,7 +119,7 @@ Embedding =  vector ของตัวเลข (128-dimension) ที่แท�
     หน้าคนละคน   → ลายเซ็นต่างกัน (มุมระหว่าง vector กว้าง)
 
   ในโค้ด:
-    face.embedding  → 128 floats
+    face.embedding  → 512 floats
     emb /= np.linalg.norm(emb)  → Normalize to unit length (L2 norm)
     ทำให้อยู่ใน "unit sphere" → cosine distance ≈ angular distance
 
@@ -189,7 +189,7 @@ Embedding =  vector ของตัวเลข (128-dimension) ที่แท�
   │       threshold รวม = sim_thresh + size_penalty            │
   ├─────────────────────────────────────────────────────────────┤
   │  5. Feature Extraction                                      │
-  │     → ArcFace model → 128-dim embedding                    │
+  │     → ArcFace model → 512-dim embedding                    │
   │     → Normalize L2 → unit vector                           │
   ├─────────────────────────────────────────────────────────────┤
   │  6. Database Matching                                       │
